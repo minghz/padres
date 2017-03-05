@@ -41,10 +41,12 @@ fi
 # basically copy them to the INSTALL_DIR
 echo "copying files to the installation directory..."
 cp -r $DOWNLOAD_DIR/build $INSTALL_DIR
+cp -r $DOWNLOAD_DIR/target $INSTALL_DIR
 cp -r $DOWNLOAD_DIR/lib $INSTALL_DIR
 cp -r $DOWNLOAD_DIR/bin $INSTALL_DIR
 cp -r $DOWNLOAD_DIR/demo $INSTALL_DIR
 cp -r $DOWNLOAD_DIR/etc $INSTALL_DIR
+cp $INSTALL_DIR/target/padres-broker-jar-with-dependencies.jar $INSTALL_DIR/lib
 
 #give execution permissions to the scripts
 chmod 755 $INSTALL_DIR/bin/*.sh
