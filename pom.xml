@@ -96,6 +96,7 @@
     </dependencies>
 
     <build>
+    <pluginManagement>
         <plugins>
             <plugin>
                 <groupId>com.helger.maven</groupId>
@@ -158,6 +159,7 @@
                 </configuration>
             </plugin>
         </plugins>
+        </pluginManagement>
     </build>
     <reporting>
         <plugins>
