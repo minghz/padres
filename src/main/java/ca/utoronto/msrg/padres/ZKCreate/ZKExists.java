@@ -1,4 +1,4 @@
-package ca.utoronto.msrg.padres.ZKCreate;
+package ca.utoronto.msrg.padres.zkcreate;
 import java.io.IOException;
 
 import org.apache.zookeeper.ZooKeeper;
