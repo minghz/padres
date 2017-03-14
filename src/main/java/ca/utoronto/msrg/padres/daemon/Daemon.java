@@ -5,6 +5,11 @@ import org.graphstream.graph.implementations.*;
 
 public class Daemon
 {
+	// note: how to run on comand line:
+	//
+	//> cd src/main/java/
+	//> java -cp ../../../target/padres-broker-jar-with-dependencies.jar:../../../target/classes/ ca.utoronto.msrg.padres.daemon.Daemon
+	
 		public static void main(String args[]) {
 			Graph graph = new SingleGraph("Tutorial 1");
 
