@@ -23,6 +23,15 @@ import javax.swing.Timer;
 import ca.utoronto.msrg.padres.common.comm.*;
 import org.apache.log4j.Logger;
 
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.data.Stat;
+
 import ca.utoronto.msrg.padres.broker.brokercore.BrokerConfig.CycleType;
 import ca.utoronto.msrg.padres.broker.controller.Controller;
 import ca.utoronto.msrg.padres.broker.controller.LinkInfo;
@@ -215,11 +224,59 @@ public class BrokerCore {
 		initHeartBeatPublisher();
 		initHeartBeatSubscriber();
 		initWebInterface();
-		initNeighborConnections();
+		//initNeighborConnections();
 		initManagementInterface();
 		initConsoleInterface();
+		initZooKeeper();
 		running = true;
 		brokerCoreLogger.info("BrokerCore is started.");
+	}
+
+	protected class ZKConnect implements Watcher {
+		ZooKeeper zk;
+		public ZKConnect(String zkHost) throws BrokerCoreException {
+			try {
+				this.zk = new ZooKeeper(zkHost, 5000, this);
+			} catch (IOException e) {
+				throw new BrokerCoreException("Failed to connect to ZooKeeper: " + zkHost + " with: " + e);
+			}
+		}
+
+		public void process(WatchedEvent we) {
+			if (we.getState() == KeeperState.SyncConnected) {
+				try {
+					String bidPath = '/' + getBrokerName();
+					String alivePath = bidPath + "/alive";
+
+					Stat bidStat = zk.exists(bidPath, false);
+					if (bidStat != null) {
+						Stat aliveStat = zk.exists(alivePath, false);
+						if (aliveStat == null) {
+							zk.delete(bidPath, bidStat.getVersion());
+						} else {
+							brokerCoreLogger.error("this broker is still alive....");
+							// TODO: crash...
+						}
+					}
+
+					zk.create(bidPath, null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+					zk.create(alivePath, null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+
+				} catch (Exception e) {
+					brokerCoreLogger.error("watcher failed: " + e);
+				}
+			}
+		}
+	}
+
+	protected void initZooKeeper() throws BrokerCoreException {
+		String zkHost = brokerConfig.getZKHost();
+		if (zkHost == null) {
+			return;
+		}
+
+		ZKConnect zkc = new ZKConnect(zkHost);
+		//TODO: save zkc
 	}
 
 	/**
@@ -503,6 +560,10 @@ public class BrokerCore {
 	 */
 	public String getBrokerID() {
 		return getBrokerURI();
+	}
+
+	public String getBrokerName() {
+		return brokerConfig.getBrokerName();
 	}
 
 	/**
