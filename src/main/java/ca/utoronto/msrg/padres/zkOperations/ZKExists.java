@@ -1,4 +1,4 @@
-package ca.utoronto.msrg.padres.zkcreate;
+package ca.utoronto.msrg.padres.zkOperations;
 import java.io.IOException;
 
 import org.apache.zookeeper.ZooKeeper;
@@ -15,30 +15,30 @@ import org.apache.zookeeper.data.Stat;
 
 public class ZKExists {
    private static ZooKeeper zk;
-   private static ZooKeeperMain conn;
+   private static ZooKeeperConnection conn;
 
    // Method to check existence of znode and its status, if znode is available.
    public static Stat znode_exists(String path) throws
       KeeperException,InterruptedException {
+	   
+	  System.out.println("CheckExsit");	
       return zk.exists(path, true);
    }
-   /*
-   public static void main(String[] args){
-    System.out.println("Hello World");
-   }*/
+   
 /*
    public static void main(String[] args) throws InterruptedException,KeeperException {
       
 	   
-	   
-	   String path = "/MyFirstZnode"; // Assign znode to the specified path
+	   String path = "/zkOperations"; // Assign znode to the specified path
 			
       try {
     	  
-         conn = new ZooKeeperMain(zk);
-        // zk = conn.connectToZK("localhost");
+    	  conn = new ZooKeeperConnection();
+          zk = conn.connect("localhost");
+         
+         
          Stat stat = znode_exists(path); // Stat checks the path of the znode
-				
+         
          if(stat != null) {
             System.out.println("Node exists and the node version is " +
             stat.getVersion());
