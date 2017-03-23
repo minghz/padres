@@ -92,8 +92,6 @@ public class BrokerConfig {
 
 	private static final String CMD_ARG_FLAG_ZOOKEEPER = "zk";
 
-	private static final String CMD_ARG_FLAG_NAME = "name";
-
 	protected String brokerURI = "socket://localhost:1100/BrokerA";
 
 	protected String[] neighborURIs;
@@ -143,8 +141,6 @@ public class BrokerConfig {
 	private boolean topk = false;
 
 	private String zkHost = null;
-
-	private String brokerName = null;
 
 	private TopkInfo topkInfo = null;
 
@@ -208,7 +204,6 @@ public class BrokerConfig {
 		this.topk = origConfig.topk;
 		this.topkInfo = origConfig.topkInfo;
 		this.zkHost = origConfig.zkHost;
-		this.brokerName = origConfig.brokerName;
 	}
 
 
@@ -329,7 +324,6 @@ public class BrokerConfig {
 		cliKeys.add(CMD_ARG_FLAG_ORDER + ":");
 		cliKeys.add(CMD_ARG_FLAG_TOPK + ":");
 		cliKeys.add(CMD_ARG_FLAG_ZOOKEEPER + ":");
-		cliKeys.add(CMD_ARG_FLAG_NAME + ":");
 		return cliKeys.toArray(new String[0]);
 	}
 
@@ -379,8 +373,6 @@ public class BrokerConfig {
 			topk = buffer.trim().equals("ON") ? true : false;
 		if ((buffer = cmdLine.getOptionValue(CMD_ARG_FLAG_ZOOKEEPER)) != null)
 			zkHost = buffer.trim();
-		if ((buffer = cmdLine.getOptionValue(CMD_ARG_FLAG_NAME)) != null)
-			brokerName = buffer.trim();
 	}
 
 	public boolean checkConfig() throws BrokerCoreException {
@@ -564,10 +556,6 @@ public class BrokerConfig {
 
 	public String getZKHost() {
 		return zkHost;
-	}
-
-	public String getBrokerName() {
-		return brokerName;
 	}
 
 	public String toString() {
