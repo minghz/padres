@@ -1,6 +1,6 @@
 #!/bin/bash
 
-USAGE="Usage: $(basename $0) -uri broker_uri [-help] [-Xms <mem_min>] [-Xmx <mem_max>] ..."
+USAGE="Usage: $(basename $0) -uri broker_uri [-help] [-zk host:port] [-Xms <mem_min>] [-Xmx <mem_max>] ..."
 
 # function to check whether a parameter is given to an option
 check_arg_missing()
