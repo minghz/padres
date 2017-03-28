@@ -1,5 +1,6 @@
 package ca.utoronto.msrg.padres.daemon;
 
+import java.util.Hashtable;
 import java.util.Iterator;
 import java.util.Random;
 
@@ -130,8 +131,47 @@ public class MainGraph
 	
 	
 	
+	//	{
+	//		{nodeId} => {
+	//			"name" => <string>,
+	//			"uri"  => <string>,
+	//			"neighbours" => "b3, b2"
+	//		}, .. 
+	//	}
+	public Hashtable<String, Hashtable<String, String>> get_graph() {
+		
+		Hashtable<String, Hashtable<String, String>> result = new Hashtable<String, Hashtable<String, String>>();
+		
+		for(Node n:this.graph.getEachNode()) {
+			
+			Hashtable<String, String> details = new Hashtable<String, String>();
+
+			details.put("name", n.getAttribute("name").toString());
+			details.put("uri", n.getAttribute("uri").toString());
+			details.put("neighbours", get_node_neighbours(n));
+			
+			result.put(n.getId(), details);
+		}
+		
+		return result;
+	}
+	
+	
 	/*================ private functions =================*/
 	
+	private String get_node_neighbours(Node n) {
+		String result = "";
+		Iterator<Node> nodes = n.getNeighborNodeIterator();
+		while(nodes.hasNext()) {
+			Node node = nodes.next();
+			if (result.length() == 0) {
+				result = result + node.getId();
+			} else {
+				result = result + ", " + node.getId();
+			}
+		}
+		return result;
+	}
 	private Node create_node(String name, String uri){
 		Node node = this.graph.addNode(name);
 		node.addAttribute("name", name);

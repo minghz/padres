@@ -1,5 +1,7 @@
 package ca.utoronto.msrg.padres.daemon;
 
+import java.util.Hashtable;
+
 public class Daemon
 {
 	// note: how to run on comand line:
@@ -14,26 +16,23 @@ public class Daemon
 		
 		MainGraph g = new MainGraph();
 		
-		g.addNode("b1", "localhost/b1");
-		g.addNode("b2", "localhost/b2");
-		g.addNode("b3", "localhost/b3");
-		g.addNode("b4", "localhost/b4");
-		g.addNode("b5", "localhost/b5");
-		g.addNode("b6", "localhost/b6");
-		g.addNode("b7", "localhost/b7");
-		g.addNode("b8", "localhost/b8");
-		g.addNode("b9", "localhost/b9");
-		g.addNode("b10", "localhost/b10");
+		for(Integer i=1; i <= graph_size; i++){
+			g.addNode("b"+ i.toString(), "localhost/b"+i.toString());
+		}
 		
 		g.print_graph();
 		
 		System.out.println("======================================");
 		
-		g.removeNode("b5");
-		g.removeNode("b4");
-		g.removeNode("b3");
+		Hashtable<String, Hashtable<String, String>> complete_graph = g.get_graph();
+		System.out.println( complete_graph );
+		System.out.println( "Key Set: " + complete_graph.keySet() );
+		
+		//g.removeNode("b5");
+		//g.removeNode("b4");
+		//g.removeNode("b3");
 
-		g.print_graph();
+		//g.print_graph();
 
 	
 	}
