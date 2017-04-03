@@ -21,7 +21,7 @@ public class MainGraph
 
 	/*================ object parameters =================*/
 
-	private Graph graph;
+	Graph graph;
 	Random rnd;
 	
 	/*================ constructor =================*/
@@ -35,6 +35,36 @@ public class MainGraph
 	/*================ public functions =================*/
 
 	public void addNode(String node_name, String node_uri){
+		
+		int node_count = this.graph.getNodeCount();
+		System.out.println(node_count);
+
+		Node node = create_node(node_name, node_uri);
+		
+		if (node_count != 0){
+			
+			int stop_i = this.rnd.nextInt(node_count);
+			
+			int i = 0;
+			for(Node n:this.graph.getEachNode()) {
+				if (i >= stop_i) {
+				
+					System.out.println(n.getId() + " " + n.getAttribute("name") + " " + n.getAttribute("uri"));
+					this.graph.addEdge(node.getId() + n.getId(), node, n);
+					
+					break;			
+				}
+				i++;
+			}
+		} else {
+			System.out.println("first node");
+		}
+	}
+
+	/* Using Dorogovtsev-Mendes algorithm to insert a new node
+	 * 
+	 */
+	public void addNode_old(String node_name, String node_uri){
 		
 		int node_count = this.graph.getNodeCount();
 		System.out.println(node_count);
@@ -85,6 +115,10 @@ public class MainGraph
 		System.out.println(node_count);
 	}
 	
+
+	/* This function is not being used
+	 * 
+	 * 
 	public void removeNode(String node_name){
 		for(Node n:this.graph.getEachNode()) {
 			if(n.getAttribute("name").toString() == node_name){
@@ -92,6 +126,7 @@ public class MainGraph
 			}
 		}
 	}
+	*/
 	
 	public void print_graph() {		
 		//Generator gen = new DorogovtsevMendesGenerator();
