@@ -13,20 +13,21 @@ public class Daemon
 			
 		// first argument args[1] is a number i.e. 10		
 		int graph_size = Integer.parseInt(args[0]);
+		int max_hop = Integer.parseInt(args[1]);
 		
-		MainGraph g = new MainGraph();
+		MainGraph g = new MainGraph(max_hop);
 		
 		for(Integer i=1; i <= graph_size; i++){
 			g.addNode("b"+ i.toString(), "localhost/b"+i.toString());
 		}
 		
-		g.print_graph();
+		//g.print_graph();
 		
-		System.out.println("======================================");
+		//System.out.println("======================================");
 		
-		Hashtable<String, Hashtable<String, String>> complete_graph = g.get_graph();
-		System.out.println( complete_graph );
-		System.out.println( "Key Set: " + complete_graph.keySet() );
+		//Hashtable<String, Hashtable<String, String>> complete_graph = g.get_graph();
+		//System.out.println( complete_graph );
+		//System.out.println( "Key Set: " + complete_graph.keySet() );
 		
 		//g.removeNode("b5");
 		//g.removeNode("b4");
