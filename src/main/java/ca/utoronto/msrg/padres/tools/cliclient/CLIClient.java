@@ -2,6 +2,10 @@ package ca.utoronto.msrg.padres.tools.cliclient;
 
 import java.io.Console;
 import java.util.Map;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.IOException;
+import java.lang.InterruptedException;
 
 import ca.utoronto.msrg.padres.client.Client;
 import ca.utoronto.msrg.padres.client.ClientConfig;
@@ -56,27 +60,50 @@ public class CLIClient extends Client {
 	}
 
 	public void run() {
-		System.out.println("Use 'exit' or 'ctrl+d' to quit\n");
-		Console con = System.console();
-		while (true) {
-			String input = con.readLine(PROMPT, clientID);
-			if (input == null) {
-				// got an EOF (Ctrl-D); exit the shell and quit probably we should quit the shell
-				// and put the broker in the background?
-				break;
+		if (!getClientConfig().stdio) {
+			System.out.println("Use 'exit' or 'ctrl+d' to quit\n");
+			Console con = System.console();
+			while (true) {
+				String input = con.readLine(PROMPT, clientID);
+				if (input == null) {
+					// got an EOF (Ctrl-D); exit the shell and quit probably we should quit the shell
+					// and put the broker in the background?
+					break;
+				}
+				// run the command, terminate if it returns false
+				System.out.println();
+				CommandResult result;
+				try {
+					result = handleCommand(input);
+				} catch (ParseException e) {
+					e.printStackTrace();
+					continue;
+				}
+				printResults(result);
+				if (result.command.equals("exit"))
+					break;
 			}
-			// run the command, terminate if it returns false
-			System.out.println();
-			CommandResult result;
-			try {
-				result = handleCommand(input);
-			} catch (ParseException e) {
-				e.printStackTrace();
-				continue;
+		} else {
+			InputStreamReader stdin = new InputStreamReader(System.in);
+			BufferedReader in = new BufferedReader(stdin);
+			while (true) {
+				String input = null;
+				try {
+					input = in.readLine();
+
+					if (input != null) {
+						CommandResult result = handleCommand(input);
+						printResults(result);
+						if (result.command.equals("exit"))
+							break;
+					} else {
+						break;
+					}
+				} catch (Exception e) {
+					// IOException || ParseException 
+					e.printStackTrace();
+				}
 			}
-			printResults(result);
-			if (result.command.equals("exit"))
-				break;
 		}
 		shutdown();
 	}

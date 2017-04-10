@@ -45,6 +45,8 @@ public class ClientConfig {
 
 	public static final String CLI_OPTION_LOG_LOCATION = "ll";
 
+	public static final String CLI_SWITCH_STDIO = "stdio";
+
 	protected Properties clientProps;
 
 	// configuration options
@@ -65,6 +67,8 @@ public class ClientConfig {
 	public String logPropertyFile = LOG_CONFIG_FILE_PATH;
 
 	public String logLocation = LOG_LOCATION_PATH;
+
+	public boolean stdio = false;
 
 	public ClientConfig() throws ClientException {
 		this(CONFIG_FILE_PATH);
@@ -87,6 +91,7 @@ public class ClientConfig {
 			detailState = clientProps.getProperty("client.store_detail_state", "OFF").toLowerCase().trim().equals(
 					"on");
 			logPeriod = Integer.parseInt(clientProps.getProperty("log.period"));
+			stdio = clientProps.getProperty("client.stdio", "OFF").toLowerCase().trim().equals("on");
 		} catch (FileNotFoundException e) {
 			throw new ClientException("Config file not found: " + this.configFile, e);
 		} catch (IOException e) {
@@ -118,6 +123,7 @@ public class ClientConfig {
 		cliKeys.add(CLI_OPTION_CONFIG_FILE + ":");
 		cliKeys.add(CLI_OPTION_LOG_CONFIG + ":");
 		cliKeys.add(CLI_OPTION_LOG_LOCATION + ":");
+		cliKeys.add(CLI_SWITCH_STDIO);
 		return cliKeys.toArray(new String[0]);
 	}
 
@@ -133,6 +139,8 @@ public class ClientConfig {
 			retryPauseTime = Integer.parseInt(buffer.trim());
 		if ((buffer = cmdLine.getOptionValue(CLI_OPTION_DETAIL_STATE)) != null)
 			detailState = buffer.trim().toLowerCase().equals("on");
+		if (cmdLine.isSwitch(CLI_SWITCH_STDIO))
+			stdio = true;
 	}
 
 	public String toString() {
@@ -144,6 +152,7 @@ public class ClientConfig {
 		outString += "\nLog Period: " + logPeriod;
 		outString += "\nLog Property File: " + logPropertyFile;
 		outString += "\nLogs Location: " + logLocation;
+		outString += "\nstdio: " + stdio;
 		return outString + "\n";
 	}
 
