@@ -18,3 +18,7 @@ derby.log
 
 target/
 /build/
+
+
+.*
+*~
