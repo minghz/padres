@@ -1,0 +1,21 @@
+#!/bin/bash
+
+if [[ "$1" == "-b" ]]; then
+	TARGET_NAMES=( "BrokerCore" )
+elif [[ "$1" == "-c" ]]; then 
+	TARGET_NAMES=( "CLIClient" )
+else
+	TARGET_NAMES=( "BrokerCore" "CLIClient" )
+fi
+
+for i in "${TARGET_NAMES[@]}"; do
+	echo "killing $i"
+	TARGETS="$(jps | awk -v t="$i" '$2 == t {print $1}')"
+	while [ -n "$TARGETS" ]; do
+		echo "killing: $(echo $TARGETS | tr '\n' ' ')"
+		echo "$TARGETS" | xargs kill
+		sleep 1
+		TARGETS="$(jps | awk -v t="$i" '$2 == t {print $1}')"
+	done
+done
+

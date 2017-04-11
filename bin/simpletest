@@ -1,0 +1,41 @@
+#!/bin/bash
+
+if [ -z ${PADRES_HOME+x} ]; then
+	echo "please set padres_home"
+fi
+
+PADRES_BIN="$PADRES_HOME/bin"
+
+echo "starting brokers..."
+$PADRES_BIN/startbroker -uri socket://localhost:1100/b0
+$PADRES_BIN/startbroker -uri socket://localhost:1101/b1
+$PADRES_BIN/startbroker -uri socket://localhost:1102/b2
+
+sleep 1
+
+if [[ -e "c0.in" ]]; then
+	rm c0.in
+fi
+if [[ -e "c1.in" ]]; then
+	rm c1.in
+fi
+
+touch c0.in c1.in
+
+echo "starting clients..."
+tail -f "c0.in" | $PADRES_BIN/startclient -cli -b socket://localhost:1100/b0 -i c0 -stdio &> "c0.out" &
+tail -f "c1.in" | $PADRES_BIN/startclient -cli -b socket://localhost:1102/b2 -i c1 -stdio &> "c1.out" &
+
+echo "running commands..."
+echo "a [class,eq,'stock'],[name,eq,'IBM'],[price,>,50]" >> c0.in
+sleep 1
+echo "s [class,eq,'stock'],[name,eq,'IBM'],[price,>,60]" >> c1.in
+sleep 1
+echo "p [class,'stock'],[name,'IBM'],[price,85]" >> c0.in
+sleep 1
+
+$PADRES_BIN/killstuff
+
+echo "c1.out: "
+cat "c1.out"
+
