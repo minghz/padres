@@ -32,6 +32,8 @@ public class MainGraph
 		this.graph = new SingleGraph("MainGraph");
 		this.graph.display();
 		this.rnd = new Random();
+    this.max_hop = 0;
+    this.cur_hop = 0;
 	}
 
 	public MainGraph (Integer max_hop){
@@ -68,7 +70,13 @@ public class MainGraph
           //System.out.println(n.getId() + " " + n.getAttribute("name") + " " + n.getAttribute("uri"));
           System.out.println("node_to_add_to " + n.getId() + " " + n.getAttribute("node_dist"));
           Integer node_dist = n.getAttribute("node_dist");
-          if ( node_dist  < this.max_hop ) {
+          
+          if (this.max_hop == 0){ // no worries, no max_hop
+            this.graph.addEdge(new_n.getId() + n.getId(), new_n, n);
+            added = true;
+            break;
+          }
+          else if ( node_dist  < this.max_hop ) {
             //found a node where we can add something to
             //add that node;
             //traverse that node and find out cur_hop
@@ -78,17 +86,18 @@ public class MainGraph
             this.graph.addEdge(new_n.getId() + n.getId(), new_n, n);
            
             //traverse nodes starting from the added node
+            Integer longest_path = 0;
             Iterator<Node> neighbours = new_n.getNeighborNodeIterator();
             while(neighbours.hasNext()) {
               Node next_node = neighbours.next();
 
               System.out.println("traverse node " + new_n.getId());
               
-              update_node_dist( new_n ,next_node, 1);
+              longest_path = update_node_dist( new_n ,next_node, 1);
             }
 
-            new_n.setAttribute("node_dist", this.cur_hop);
-            System.out.println("cur_hop " + this.cur_hop);
+            new_n.setAttribute("node_dist", longest_path);
+            System.out.println("cur_hop " + longest_path);
 
             System.out.println("node dists " + n.getId() + " " + n.getAttribute("node_dist").toString());
             System.out.println("node dists " + new_n.getId() + " " + new_n.getAttribute("node_dist").toString());
@@ -254,6 +263,7 @@ public class MainGraph
 		node.addAttribute("name", name);
 		node.addAttribute("uri", uri);
 		node.addAttribute("node_dist", node_dist); // for max_hop calculation
+    node.addAttribute("ui.label", name);
 		
 		return node;
 	}
@@ -276,7 +286,7 @@ public class MainGraph
    * go through each node starting from the given node
    * if node traversed to is the last node, update that node's node_dist
    * */
-  private void update_node_dist(Node came_from_node, Node node, Integer hops){
+  private Integer update_node_dist(Node came_from_node, Node node, Integer hops){
     System.out.println("update_node_dist " + node.getId() + " hops: " + hops.toString());
 
     //hops = hops + 1;
@@ -295,20 +305,27 @@ public class MainGraph
         System.out.println("set distance for it " + node.getId() + " " + node.getAttribute("node_dist"));
       }
 
-      return;
+      return hops;
 
     }
     
+
     //this is not an extremety node
+    Integer longest_path = hops;
     Iterator<Node> neighbours = node.getNeighborNodeIterator();
 		while(neighbours.hasNext()) {
 			Node next_node = neighbours.next();
       if(next_node != came_from_node){
         System.out.println("traverse node " + next_node.getId());
         
-        update_node_dist( node, next_node, hops + 1);
+        Integer path_length = update_node_dist( node, next_node, hops + 1);
+        if (path_length > longest_path){
+          longest_path = path_length;
+        }
       }
 		}
+
+    return longest_path;
   }
 
 
