@@ -25,9 +25,9 @@ public class Daemon
 		
 		//System.out.println("======================================");
 		
-		//Hashtable<String, Hashtable<String, String>> complete_graph = g.get_graph();
-		//System.out.println( complete_graph );
-		//System.out.println( "Key Set: " + complete_graph.keySet() );
+		Hashtable<String, Hashtable<String, String>> complete_graph = g.get_graph();
+		System.out.println( complete_graph );
+		System.out.println( "Key Set: " + complete_graph.keySet() );
 		
 		//g.removeNode("b5");
 		//g.removeNode("b4");

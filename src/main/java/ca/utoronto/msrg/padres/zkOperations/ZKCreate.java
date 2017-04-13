@@ -1,4 +1,4 @@
-package ca.utoronto.msrg.padres.zkOperations;
+package ca.utoronto.msrg.padres.daemon;
 
 import java.io.IOException;
 
@@ -24,7 +24,17 @@ public class ZKCreate {
    // create static instance for ZooKeeperConnection class.
    private static ZooKeeperConnection conn;
  
-
+   public ZKCreate(){
+	   try{
+	   conn = new ZooKeeperConnection();
+       zk = new ZooKeeper("localhost", 5000,new ZKEventCatcher());   
+       zk = conn.connect("localhost");
+	   }catch (Exception e) {
+	         System.out.println("message"+e.getMessage()); //Catch error message
+	   }
+	  
+   }
+   
    public static void main(String[] args) {	   
 	   
 	   BasicConfigurator.configure();
@@ -44,7 +54,10 @@ public class ZKCreate {
          
          zk = conn.connect("localhost");
        
-         create(path, data);
+         ZKCreate ZKC=new ZKCreate();
+         
+         
+         ZKC.create(path, data);
          conn.close();
          
       } catch (Exception e) {
@@ -52,13 +65,16 @@ public class ZKCreate {
       }
    }
    
-   
+ 
   
    // Method to create znode in zookeeper ensemble
-   public static void create(String path, byte[] data) throws 
+   public void create(String path, byte[] data) throws 
       KeeperException,InterruptedException {
-      zk.create(path, data, ZooDefs.Ids.OPEN_ACL_UNSAFE,
-      CreateMode.PERSISTENT);
+      zk.create(path, 
+    		  data,
+    		  ZooDefs.Ids.OPEN_ACL_UNSAFE,
+    		  CreateMode.PERSISTENT
+    		  );
       
    }
 

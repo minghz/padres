@@ -1,4 +1,4 @@
-package ca.utoronto.msrg.padres.zkOperations;
+package ca.utoronto.msrg.padres.daemon;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
@@ -58,9 +58,13 @@ public class ZKEventCatcher  implements Watcher, AsyncCallback.StatCallback{
 
 	    public void process(WatchedEvent event) {
 	        String path = event.getPath();
+	        
 	        System.out.println();
-	        System.out.println("CATCH EVENT!!!");
+	        System.out.println("PATH:"+path);
+	        System.out.println("CAUGHT EVENT!!!");
+	        System.out.println(event.getType().toString());
 	        System.out.println();
+	        
 	        if (event.getType() == Event.EventType.None) {
 	            switch (event.getState()) {
 	                case SyncConnected:
@@ -68,9 +72,24 @@ public class ZKEventCatcher  implements Watcher, AsyncCallback.StatCallback{
 	                case Expired:
 	                    break;
 	            }
+	            
+	            try{
+	                zk.exists("/",new ZKEventCatcher());
+	                }catch(Exception e){
+	                	System.out.println(e.getMessage());
+	                	
+	                }
+	            
 	        } else {
 	            if (path != null) {
-	                zk.exists(path, true, this, null);
+	            	
+	            	try{
+	                zk.exists("/",new ZKEventCatcher());
+	                }catch(Exception e){
+	                	System.out.println(e.getMessage());
+	                	
+	                }
+	            	
 	            }
 	        }
 	    }
