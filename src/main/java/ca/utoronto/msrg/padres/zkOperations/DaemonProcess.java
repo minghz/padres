@@ -5,6 +5,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.HashSet;
 
 import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.WatchedEvent;
@@ -21,11 +22,16 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	 	ZooKeeper zk;
 	    ZooKeeperConnection conn;
 	    MainGraph MG;
+	    
+	    HashSet<String> currentBrokers = new HashSet<String>();
+	    String newBroker = new String();
 	
 	    public DaemonProcess(){
 	    	
 	       MG = new MainGraph();
-	    	
+	       newBroker="zookeeper";
+	       currentBrokers.add("zookeeper");
+   		
 	 	   try{
 	 	   conn = new ZooKeeperConnection();
 	        zk = new ZooKeeper("localhost", 5000,this);   
@@ -46,7 +52,7 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	        
 	        System.out.println();
 	        System.out.println("Current Path:"+path);
-	     //   System.out.println(event.getType().toString());
+	    //    System.out.println(event.getType().toString());
 	     //   System.out.println();
 	        
 	        
@@ -86,14 +92,17 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 		            	else if(path.equals("/")){
 		            		System.out.println(path+str);
 		            		zk.getChildren(path+str, this);
+		            		
+		            		
 		            	}
 		            	else{
 		            		System.out.println(path+"/"+str);
 		            		zk.getChildren(path+"/"+str, this);	
+		            		
+		            		
 		            	}
 	            	}
 	            	
-	           
 	            	if(!path.isEmpty()){
 	            		zk.getChildren(path, this);
 	            	}
@@ -128,49 +137,48 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 				        
 				        
 				        if(path!=null)
-			            	childrenList=zk.getChildren(path,this);
+			            	childrenList = zk.getChildren(path,this);
 			            else
-			            	childrenList=zk.getChildren(rootPath,this);
+			            	childrenList = zk.getChildren(rootPath,this);
 				        
 				        
-				        int i=0;
+				        int i = 0;
 		            	
 				        String str;
 				        
-		            	for(Iterator iterator=childrenList.iterator();iterator.hasNext();i++){	 
-		            		
+		            	for(Iterator iterator = childrenList.iterator();iterator.hasNext();i++){	 
 		            		
 		            		str=iterator.next().toString();
-		            		
 		            		
 		            	//	System.out.println("i="+i+" Children:"+str);
 		            		if(path==null){
 		            			System.out.println(rootPath+str);
 			            		zk.getChildren(rootPath,this);
+			            		
 			            		break;
 			            	}
 			            	else{
-			            		
-			            		
 			            		if(path.equals("/")){
 				            		System.out.println(path+str);
 				            		zk.getChildren(path+str, this);
-				            		
-				            		
 				            		
 				            	}
 				            	else{
 				            		System.out.println(path+"/"+str);
 				            		zk.getChildren(path+"/"+str, this);	
 				            		
-				            		
-				            		
 				            	}
 			            		
-			            	}
 			            		
+			            		if(!currentBrokers.contains(str)){
+			            			currentBrokers.add(str);
+			            			newBroker=str;			          			
+			            		}  		
+			            	}	
 		            	}
 		            	
+	            		
+	            		System.out.println("new Broker is "+ newBroker);
 		            	
 		            	//Add watcher to current path
 		            	if(!path.isEmpty()){
@@ -192,12 +200,8 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	        
 	        else if (event.getType() == Event.EventType.NodeDeleted){
 		        System.out.println("Node Delete Event");
-		        
-		        
-		        
 		        flagDelete=true;
 		
-	 		 
 		    }
 	        
 	        else if (event.getType() == Event.EventType.NodeCreated){
