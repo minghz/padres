@@ -195,6 +195,8 @@ public class OverlayManager implements Manager, ConnectionListenerInterface {
 		} else if (command.equalsIgnoreCase("DISCONNECT")) {
 			// TODO: disconnect from overlay network
 			// bindings.remove(....);
+		} else if (command.equalsIgnoreCase("UPDATE")) {
+			updateBrokerConnection(pairs, payload);
 		} else if (command.equalsIgnoreCase("STOP")) {
 			stopOutputQueues();
 		} else if (command.equalsIgnoreCase("RESUME")) {
@@ -217,6 +219,58 @@ public class OverlayManager implements Manager, ConnectionListenerInterface {
 			// manager
 			overlayLogger.warn("Invalid command for overlayManager.");
 			exceptionLogger.warn(new Exception("Invalid command for overlayManager."));
+		}
+	}
+
+	public void updateBrokerConnection(Map<String, Serializable> pairs, Serializable payload) {
+		// got connection request from admin, initiate connection request to neighbour
+		String toBrokerURI = (String) pairs.get("broker");
+
+		overlayLogger.debug("The broker got UPDATE command from admin, and try to connect the broker "
+					+ toBrokerURI + ".");
+
+		if (toBrokerURI.equals("")) {
+			overlayLogger.error("The broker " + brokerCore.getBrokerID()
+					+ " tries to connect to null remote broker.");
+			exceptionLogger.error(new Exception("The broker " + brokerCore.getBrokerID()
+						+ " tries to connect to null remote broker."));
+		} else {
+			// added by Shuang, for the scenario that the broker tries to connect itself
+			try {
+				if(checkRemoteBrokerURItoConnect(toBrokerURI)) {
+					try {
+						// create an output queue for the neighbour and start it
+						overlayLogger.debug("Broker " + brokerCore.getBrokerID()
+								+ " is creating MessageSender for broker " + toBrokerURI);
+
+						MessageSender msgSender = createMessageSenderAndConnect(toBrokerURI);
+
+						String toBrokerID = msgSender.getID();
+						// add to the overlay routing table
+						overlayLogger.info("Adding broker " + toBrokerID
+								+ " as new neighbour into ORT.");
+						MessageDestination remoteDest = new MessageDestination(toBrokerID,
+								DestinationType.BROKER);
+						OutputQueue remoteOutputQueue = createOutputQueue(remoteDest, msgSender);
+						routingTable.addBroker(remoteOutputQueue);
+						brokerCore.registerQueue(remoteOutputQueue);
+						remoteOutputQueue.start();
+						connecting.add(toBrokerURI);
+						// send CONNECT_REQ
+						sendConnectRequest(toBrokerID, remoteDest);
+
+						brokerCoreLogger.info(String.format(
+									"Connection to remote broker %s(%s) is complete", toBrokerID,
+									toBrokerURI));
+					} catch (CommunicationException e) {
+						overlayLogger.error("Could not connect to " + toBrokerURI);
+						exceptionLogger.error(e);
+					}
+				}
+			} catch (CommunicationException e) {
+				overlayLogger.error(e.getMessage());
+				exceptionLogger.error(e);
+			}
 		}
 	}
 
