@@ -21,21 +21,21 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	 	ZooKeeper zk;
 	    ZooKeeperConnection conn;
 	    MainGraph MG;
+
+		List<String> currentBrokers;
 	
-	    public DaemonProcess(){
-	    	
-	       MG = new MainGraph();
-	    	
-	 	   try{
-	 	   conn = new ZooKeeperConnection();
-	        zk = new ZooKeeper("localhost", 5000,this);   
-	        zk = conn.connect("localhost");
-	 	   }catch (Exception e) {
-	 	         System.out.println("message"+e.getMessage()); //Catch error message
-	 	   }
-	 	   
-	 	  
-	    }
+		public DaemonProcess(int maxHops) {
+			MG = new MainGraph(maxHops);
+			try {
+				conn = new ZooKeeperConnection();
+				zk = new ZooKeeper("localhost", 5000,this);   
+				zk = conn.connect("localhost");
+			} catch (Exception e) {
+				System.out.println("message"+e.getMessage()); //Catch error message
+				System.out.println(e);
+				System.exit(1);
+			}
+		}
 	    
 	    static boolean flagDelete=false;
 	    
@@ -109,6 +109,9 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	        
 	        else if (event.getType() == Event.EventType.NodeChildrenChanged){
 	        	
+				List<String> childrenList = zk.getChildren(path,this);
+				HashSet<String> childrenSet = new HashSet<String>(childrenList);
+				Collections.sort(childrenList);
 	       	
 	        	if(flagDelete==false){
 	        		
@@ -192,74 +195,49 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	        
 	        else if (event.getType() == Event.EventType.NodeDeleted){
 		        System.out.println("Node Delete Event");
-		        
-		        
-		        
-		        flagDelete=true;
-		
-	 		 
+
+				assert(path.endsWith("alive"));
+
+				// update graph
+				MainGraph newMG = new MainGraph(MG.max_hop);
+				for (Node n : MG.graph.getEachNode()) {
+					String name = n.getAttribute("name");
+					String uri = n.getAttribute("uri");
+
+					// skip removed broker
+					if (name.equals(path.substring(0, path.length() - 6))
+						continue;
+
+					newMG.addNode(name, uri);
+				}
+				MG = newMG;
+
+				// update zookeeper
+
 		    }
-	        
-	        else if (event.getType() == Event.EventType.NodeCreated){
-	        System.out.println("Node Created Event"); 
-	        		 
-	        }
-	        
-	        else if (event.getType() == Event.EventType.NodeDataChanged){
-		        System.out.println("Node Data Changed Event");
-       		 
-		    }
-	       
-	        if (path != null) {	
-	            	try{
-	            	zk.getChildren(rootPath,this);
-	                }catch(Exception e){
-	                	System.out.println(e.getMessage());
-	                	
-	                }
-	            	
-	        }
-	    	
-	         
 	    }
 
+		public static void main(String[] args){
 
-	    
-	    public static void main(String[] args){
-	    	
-	    	DaemonProcess dp = new DaemonProcess();
-	    	try{
-	    	Thread.sleep(1000000);
-	    	}catch (Exception e){
-	    		System.out.println("message"+e.getMessage()); //Catch error message
-	    	}
-	    	
-	    
-	    }
-	
-	    public static void deleteOneNode(){
-	    	
-	    	try{
-	    		
-	    		ZKDelete zkObj = new ZKDelete();
-	    		
-	    		for(int i=4;i<100;i++){
-	    			
-	    		zkObj.delete("/zkOperations"+i);
-	    		}
-	    		
-	    	}catch(Exception e){
-	    		
-	    		
-	    		
-	    	}
-	    	
-	    }
-	 
-	   
+			if (args.len != 1) {
+				System.out.println("usage: daemonprocess <max hops>");
+			}
+
+			int max_hop = Integer.parseInt(args[0]);
+			DaemonProcess dp = new DaemonProcess(max_hop);
+
+			// just sleep whenever zkwatcher isn't working
+			while (true) {
+				try {
+					Thread.sleep(1000000);
+				} catch (Exception e) {
+					System.out.println("message"+e.getMessage()); //Catch error message
+				}
+			}
+		}
+
 
 	    public static void createNewGraph(int numofNodes){
-	
 	
 		MainGraph MG=new MainGraph();
 
