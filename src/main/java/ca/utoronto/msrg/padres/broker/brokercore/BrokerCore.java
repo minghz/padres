@@ -257,10 +257,18 @@ public class BrokerCore {
 					if (bidStat != null) {
 						Stat aliveStat = zk.exists(alivePath, false);
 						if (aliveStat == null) {
+							// cleanup old broker data
+							List<String> children = zk.getChildren(bidPath, false);
+							for (String child : children) {
+								String childpath = bidPath+"/"+child;
+								Stat childstat = zk.exists(childpath, false);
+								zk.delete(childpath, bidStat.getVersion());
+							}
 							zk.delete(bidPath, bidStat.getVersion());
 						} else {
-							brokerCoreLogger.error("this broker is still alive....");
-							// TODO: crash...
+							// uri binding should fail and crash before this...
+							brokerCoreLogger.error("broker "+bidPath+" is still alive...");
+							System.exit(1);
 						}
 					}
 
@@ -274,6 +282,9 @@ public class BrokerCore {
 					bidWatcher.handleChildrenChange(bidPath);
 				} catch (Exception e) {
 					brokerCoreLogger.error("watcher failed: " + e);
+					// TODO: can maybe retry zookeeper connection, but if the broker's zk
+					// path isn't setup right correctly the broker should die
+					System.exit(1);
 				}
 			}
 		}
@@ -298,50 +309,60 @@ public class BrokerCore {
 
 		private void handleChildrenChange(String bidPath) {
 			try {
-				List<String> oldChildren;
-				List<String> children = zk.getChildren(bidPath, this);
-				Collections.sort(children);
-				do {
-					for (String child : children) {
-						String neighborURI;
-						brokerCoreLogger.info("[hi] " + bidPath + " " + child);
-						byte[] b = zk.getData(bidPath+"/"+child, false, null);
-						if (b != null) {
-							neighborURI = new String(b);
+				//TODO: phase 1: cleanup
+				//TODO: 	a. freeze message sending
+				//TODO: 	b. clear routes
+				//TODO: 	a. close existing broker queues
+				//TODO: phase 2: update
+				//TODO: 	a. connect to new brokers
+				//TODO: 	b. create new routes (resend adv + sub??)
+				//TODO: 	c. unfreeze message sending (resend inflight pubs??)
 
+				sendUpdates(bidPath);
 
-							// TODO: update...
-							// send OVERLAY-CONNECT(s) to controller
-							Publication p = MessageFactory.createEmptyPublication();
-							p.addPair("class", "BROKER_CONTROL");
-							p.addPair("brokerID", getBrokerID());
-							p.addPair("command", "OVERLAY-CONNECT");
-							p.addPair("broker", neighborURI);
-							PublicationMessage pm = new PublicationMessage(p, "initial_connect");
-							if (brokerCoreLogger.isDebugEnabled())
-								brokerCoreLogger.debug("Broker " + getBrokerID()
-										+ " is sending initial connection to broker " + neighborURI);
-							queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
-
-
-						} else {
-							brokerCoreLogger.error("bidPath: " + bidPath + " child: " + child + " has null data");
-						}
-					}
-					/*
-					 * - a watch was set on the initial getchildren, but it may be possible
-					 *   for an update to zk to have occured with no watch triggered
-					 * - checking again would detect an unseen change
-					 * - additional set watchers are from the same object so process will only
-					 *   be triggered once on new updates
-					 */
-					oldChildren = new ArrayList<String>(children);
-					children = zk.getChildren(bidPath, this);
-					Collections.sort(children);
-				} while (!oldChildren.equals(children));
 			} catch (Exception e) {
 				brokerCoreLogger.error("handleChildrenChange failed: " + e);
 			}
+		}
+
+		private void sendUpdates(String bidPath) throws KeeperException, InterruptedException {
+			List<String> oldChildren;
+			List<String> children = zk.getChildren(bidPath, this);
+			Collections.sort(children);
+			do {
+				for (String child : children) {
+					if (child.equals("alive")) // skip its this broker's alive zknode
+						continue;
+					String neighborURI;
+					byte[] b = zk.getData(bidPath+"/"+child, false, null);
+					if (b != null) {
+						neighborURI = new String(b);
+
+						Publication p = MessageFactory.createEmptyPublication();
+						p.addPair("class", "BROKER_CONTROL");
+						p.addPair("brokerID", getBrokerID());
+						p.addPair("command", "OVERLAY-UPDATE");
+						p.addPair("broker", neighborURI);
+						PublicationMessage pm = new PublicationMessage(p, "initial_connect");
+						if (brokerCoreLogger.isDebugEnabled())
+							brokerCoreLogger.debug("Broker " + getBrokerID()
+									+ " is sending initial connection to broker " + neighborURI);
+						queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
+					} else {
+						brokerCoreLogger.error("bidPath: " + bidPath + " child: " + child + " has null data");
+					}
+				}
+				/*
+				 * - a watch was set on the initial getchildren, but it may be possible
+				 *   for an update to zk to have occured with no watch triggered
+				 * - checking again would detect an unseen change
+				 * - additional set watchers are from the same object so process will only
+				 *   be triggered once on new updates
+				 */
+				oldChildren = new ArrayList<String>(children);
+				children = zk.getChildren(bidPath, this);
+				Collections.sort(children);
+			} while (!oldChildren.equals(children));
 		}
 	}
 
