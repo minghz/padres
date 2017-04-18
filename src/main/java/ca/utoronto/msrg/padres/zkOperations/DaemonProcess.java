@@ -12,16 +12,21 @@ import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.Watcher.Event;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.ZooDefs;
+
 import org.graphstream.graph.Graph;
 import org.graphstream.graph.Node;
-import org.apache.log4j.BasicConfigurator;
 
 
 public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 	
-	 	ZooKeeper zk;
-	    ZooKeeperConnection conn;
-	    MainGraph MG;
+	String LOCKPATH = "/update_lock";
+	ZooKeeper zk;
+	ZooKeeperConnection conn;
+	MainGraph MG;
 
 	    HashSet<String> currentBrokers = new HashSet<String>();
 	    String newBroker = new String();
@@ -39,168 +44,54 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 			}
 		}
 	    	
-	    static boolean flagDelete=false;
-	    
 	    public void process(WatchedEvent event) {
-	    	
-	    	
 	        String path = event.getPath();
 	        
-	        System.out.println();
 	        System.out.println("Current Path:"+path);
-	    //    System.out.println(event.getType().toString());
-	     //   System.out.println();
-	        
 	        
 	        String rootPath="/";
-	        
-	        
-	        
-	        if (event.getType() == Event.EventType.None) {
-	      //  System.out.println("None Event");
-	        	
-	            switch (event.getState()) {
-	                case SyncConnected:
-	                    break;
-	                case Expired:
-	                    break;
-	            }
-	            
-	            try{
-	            	
-	            	List<String> childrenList = new ArrayList<String>();
-	            	if(path!=null)
-	            	childrenList=zk.getChildren(path,this);
-	            	else
-	            	childrenList=zk.getChildren(rootPath,this);
-	            	
-	            	int i=0;
-	            	
-	            	for(Iterator iterator=childrenList.iterator();iterator.hasNext();){	 
-	            		i++;
-	            		String str=iterator.next().toString();
-	            		System.out.println("i="+i+" Children:"+str);
-	            		if(path==null){
-	            			System.out.println("/"+str);
-		            		zk.getChildren("/"+str, this);
-		            		break;
-		            	}
-		            	else if(path.equals("/")){
-		            		System.out.println(path+str);
-		            		zk.getChildren(path+str, this);
-		            		
-		            		
-		            	}
-		            	else{
-		            		System.out.println(path+"/"+str);
-		            		zk.getChildren(path+"/"+str, this);	
-		            		
-		            		
-		            	}
-	            	}
-	            	
-	            	if(!path.isEmpty()){
-	            		zk.getChildren(path, this);
-	            	}
-	                zk.getChildren(rootPath,this);
-	                
-	               
-	            }catch(Exception e){
-	                	System.out.println(e.getMessage());
-	                	
-	            }    
-	        } 
-	        
-	        
-	        else if (event.getType() == Event.EventType.NodeChildrenChanged){
-	        	
-				List<String> childrenList = zk.getChildren(path,this);
-				HashSet<String> childrenSet = new HashSet<String>(childrenList);
-				Collections.sort(childrenList);
-	       	
-	        	if(flagDelete==false){
-	        		
-	        		//step 1: ZKget
-	        		
-	        		//step 2: get the whole graph get_graph()
-	        		
-	        		//ZKCreate("")
-	        		
-	        		
-	        		//Codes if Children is created not deleted
-				    // System.out.println("Node Children Changed Event");
-				        
-				        try{
-				        	
-				        List<String> childrenList = new ArrayList<String>();
-				        
-				        
-				        if(path!=null)
-			            	childrenList = zk.getChildren(path,this);
-			            else
-			            	childrenList = zk.getChildren(rootPath,this);
-				        
-				        
-				        int i = 0;
-		            	
-				        String str;
-				        
-		            	for(Iterator iterator = childrenList.iterator();iterator.hasNext();i++){	 
-		            		
-		            		str=iterator.next().toString();
-		            		
-		            	//	System.out.println("i="+i+" Children:"+str);
-		            		if(path==null){
-		            			System.out.println(rootPath+str);
-			            		zk.getChildren(rootPath,this);
-			            		
-			            		break;
-			            	}
-			            	else{
-			            		if(path.equals("/")){
-				            		System.out.println(path+str);
-				            		zk.getChildren(path+str, this);
-				            		
-				            	}
-				            	else{
-				            		System.out.println(path+"/"+str);
-				            		zk.getChildren(path+"/"+str, this);	
-				            		
-				            	}
-			            		
-			            		
-			            		if(!currentBrokers.contains(str)){
-			            			currentBrokers.add(str);
-			            			newBroker=str;			          			
-			            		}  		
-			            	}	
-		            	}
-		            	
-	            		
-	            		System.out.println("new Broker is "+ newBroker);
-		            	
-		            	//Add watcher to current path
-		            	if(!path.isEmpty()){
-		            		zk.getChildren(path, this);
-		            	}
-		            	
-				        }catch(Exception e){
-				        	
-				        	System.out.println(e.getMessage());
-				        	
-				        }
-	        	}
-	        	else{
-	        		flagDelete=false;
-	        	
-	        	}
-       		 
-		    }
-	        
-	        else if (event.getType() == Event.EventType.NodeDeleted) {
+
+			if (event.getType() == Event.EventType.None) {
+				if (event.getState() == Event.KeeperState.SyncConnected) {
+					createUpdateLock();
+
+					try {
+						// initialize any existing brokers
+						List<String> childrenList = zk.getChildren(rootPath, false);
+						for (String child : childrenList) {
+							String uri = null;
+							byte[] bytes = zk.getData(rootPath + child, false, null);
+							if (bytes == null) {
+								System.out.println("[error] initialize getData data null! - path = " +
+										rootPath + child);
+								System.exit(1);
+							}
+							uri = new String(bytes);
+							MG.addNode(child, uri);
+						}
+					} catch (KeeperException e) {
+						System.out.println("[error] initialize getData - path = " +
+								e.getPath() + " code = " + e.getCode() + " e: " + e);
+						System.exit(1);
+					} catch (InterruptedException e) {
+						System.out.println("[error] initialize getData - e = " + e);
+						System.exit(1);
+					}
+
+					updateZK();
+
+					releaseUpdateLock();
+				} else {
+					System.out.println("weird event??? state = " + event.getState() + " - " + event);
+					System.exit(1);
+				}
+	        } else if (event.getType() == Event.EventType.NodeChildrenChanged) {
+		    } else if (event.getType() == Event.EventType.NodeDeleted) {
 		        System.out.println("Node Delete Event: " + path);
 
 				assert(path.endsWith("alive"));
+
+				acquireUpdateLock();
 
 				// update graph
 				MainGraph newMG = new MainGraph(MG.max_hop);
@@ -208,21 +99,121 @@ public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
 					String name = n.getAttribute("name");
 					String uri = n.getAttribute("uri");
 
-					// skip removed broker
-					if (name.equals(path.substring(0, path.length() - 6))
+					// skip removed broker ( /(1) <name> /alive(-6) )
+					if (name.equals(path.substring(1, path.length() - 6)))
 						continue;
 
 					newMG.addNode(name, uri);
 				}
 				MG = newMG;
 
-				// update zookeeper
-		    }
-	    }
+				updateZK();
+
+				releaseUpdateLock();
+			}
+		}
+
+		// must be called with zookeeper update lock
+		private void updateZK() {
+			try {
+				for (Node broker : MG.graph.getEachNode()) {
+					String bidPath = "/" + broker.getAttribute("name");
+
+					// clean existing children
+					List<String> children = zk.getChildren(bidPath, false);
+					for (String child : children) {
+						if (child.equals("alive"))
+							continue;
+
+						String childPath = bidPath + "/" + child;
+						Stat bidStat = zk.exists(childPath, false);
+						zk.delete(childPath, bidStat.getVersion());
+						System.out.println("deleted old neighbour path = " + childPath);
+					}
+
+					// add new children
+					Iterator<Node> neighboursIter = broker.getNeighborNodeIterator();
+					while(neighboursIter.hasNext()) {
+						Node neighbour = neighboursIter.next();
+						String neighbourPath = bidPath + "/" + neighbour.getAttribute("name");
+						String neighbourUri = neighbour.getAttribute("uri");
+						zk.create(neighbourPath, neighbourUri.getBytes(),
+								ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+						System.out.println("created neighbour path = " +
+								neighbourPath + " data = " + neighbourUri);
+					}
+				}
+			} catch (KeeperException e) {
+				System.out.println("[error] updateZK - path = " + e.getPath() +
+						" code = " + e.getCode() + " e: " + e);
+				System.exit(1);
+			} catch (InterruptedException e) {
+				System.out.println("[error] updateZK - e = " + e);
+				System.exit(1);
+			}
+		}
+
+		// TODO: ensure only 1 daemon running (and allow for daemon to be
+		// restarted) with PID node of currently running daemon
+		private void createUpdateLock() {
+			try {
+				byte[] b = { (byte) 1 };
+				Stat lockStat = zk.exists(LOCKPATH, false);
+				if (lockStat != null) {
+					System.out.println("[warn] lock already exists make sure no other daemons are running...");
+					zk.setData(LOCKPATH, b, lockStat.getVersion());
+				} else {
+					zk.create(LOCKPATH, b, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+				}
+			} catch (KeeperException e) {
+				System.out.println("[error] createUpdateLock - path = " + e.getPath() +
+						" code = " + e.getCode() + " e: " + e);
+				System.exit(1);
+			} catch (InterruptedException e) {
+				System.out.println("[error] createUpdateLock - e = " + e);
+				System.exit(1);
+			}
+		}
+
+		private void acquireUpdateLock() {
+			try {
+				Stat lockStat = null; 
+				byte[] lock = zk.getData(LOCKPATH, false, lockStat);
+				// should not be possible to already be in an update...
+				assert((int)lock[0] == 0);
+				lock[0] = (byte) 1;
+				zk.setData(LOCKPATH, lock, lockStat.getVersion());
+			} catch (KeeperException e) {
+				System.out.println("[error] acquireUpdateLock - path = " + e.getPath() +
+						" code = " + e.getCode() + " e: " + e);
+				System.exit(1);
+			} catch (InterruptedException e) {
+				System.out.println("[error] acquireUpdateLock - e = " + e);
+				System.exit(1);
+			}
+		}
+
+		private void releaseUpdateLock() {
+			try {
+				Stat lockStat = null; 
+				byte[] lock = zk.getData(LOCKPATH, false, lockStat);
+				// should not be possible to already be out of an update...
+				assert((int)lock[0] == 1);
+				lock[0] = (byte) 0;
+				zk.setData(LOCKPATH, lock, lockStat.getVersion());
+			} catch (KeeperException e) {
+				System.out.println("[error] releaseUpdateLock - path = " + e.getPath() +
+						" code = " + e.getCode() + " e: " + e);
+				System.exit(1);
+			} catch (InterruptedException e) {
+				System.out.println("[error] releaseUpdateLock - e = " + e);
+				System.exit(1);
+			}
+		}
 
 		public static void main(String[] args){
 
-			if (args.len != 1) {
+			if (args.length != 1) {
 				System.out.println("usage: daemonprocess <max hops>");
 			}
 
