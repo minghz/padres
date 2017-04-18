@@ -32,8 +32,6 @@ import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher.Event.KeeperState;
-import org.apache.zookeeper.Watcher.Event.EventType;
 import org.apache.zookeeper.data.Stat;
 
 import ca.utoronto.msrg.padres.broker.brokercore.BrokerConfig.CycleType;
@@ -248,7 +246,7 @@ public class BrokerCore {
 		}
 
 		public void process(WatchedEvent we) {
-			if (we.getState() == KeeperState.SyncConnected) {
+			if (we.getState() == Event.KeeperState.SyncConnected) {
 				try {
 					String bidPath = '/' + getBrokerNodeID();
 					String alivePath = bidPath + "/alive";
@@ -286,6 +284,9 @@ public class BrokerCore {
 					// path isn't setup right correctly the broker should die
 					System.exit(1);
 				}
+			} else {
+				brokerCoreLogger.error("weird event??? state = " + we.getState() + " - " + we);
+				System.exit(1);
 			}
 		}
 	}
@@ -299,7 +300,7 @@ public class BrokerCore {
 		}
 
 		public void process(WatchedEvent we) {
-			if (we.getType() == EventType.NodeChildrenChanged) {
+			if (we.getType() == Event.EventType.NodeChildrenChanged) {
 				handleChildrenChange(we.getPath());
 			} else {
 				brokerCoreLogger.error("BidWatcher unhandled event: " + we);
@@ -317,6 +318,7 @@ public class BrokerCore {
 				//TODO: 	a. connect to new brokers
 				//TODO: 	b. create new routes (resend adv + sub??)
 				//TODO: 	c. unfreeze message sending (resend inflight pubs??)
+				// OVERLAY-SHUTDOWN_REMOTEBROKER (OverlayManager.java:210)
 
 				sendUpdates(bidPath);
 
