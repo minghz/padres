@@ -1,13 +1,16 @@
 package ca.utoronto.msrg.padres.daemon;
 
-import java.util.Iterator;
+import org.apache.log4j.Logger;
+import org.apache.log4j.BasicConfigurator;
+import ca.utoronto.msrg.padres.common.util.LogException;
+import ca.utoronto.msrg.padres.common.util.LogSetup;
 
-import java.util.LinkedList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashSet;
 
-import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
@@ -21,248 +24,251 @@ import org.graphstream.graph.Graph;
 import org.graphstream.graph.Node;
 
 
-public class DaemonProcess implements Watcher/*, AsyncCallback.StatCallback*/{
-	
-	String LOCKPATH = "/update_lock";
-	ZooKeeper zk;
-	ZooKeeperConnection conn;
-	MainGraph MG;
+public class DaemonProcess implements Watcher, Runnable {
 
-	    HashSet<String> currentBrokers = new HashSet<String>();
-	    String newBroker = new String();
-	
-		public DaemonProcess(int maxHops) {
-			MG = new MainGraph(maxHops);
-			try {
-				conn = new ZooKeeperConnection();
-				zk = new ZooKeeper("localhost", 5000,this);   
-				zk = conn.connect("localhost");
-			} catch (Exception e) {
-				System.out.println("message"+e.getMessage()); //Catch error message
-				System.out.println(e);
-				System.exit(1);
-			}
+	protected static Logger daemonLogger;
+	private static final String ROOTPATH  = "/";
+	private static final String LOCKNAME  = "update_lock";
+	private static final String ALIVENAME = "alive";
+	private static final String LOCKPATH  = ROOTPATH + LOCKNAME;
+	private static final String[] EXCLUDE_VALUES = new String[] { "update_lock", "zookeeper" };
+	private static final HashSet<String> EXCLUDE = new HashSet<String>(Arrays.asList(EXCLUDE_VALUES));
+	private ZooKeeper zk;
+	private ZooKeeperConnection conn;
+	private MainGraph MG;
+
+	private HashSet<String> oldBrokers = new HashSet<String>();
+
+	public DaemonProcess(int maxHops) {
+		daemonLogger = Logger.getLogger(DaemonProcess.class);
+
+		MG = new MainGraph(maxHops);
+		try {
+			conn = new ZooKeeperConnection();
+			zk = new ZooKeeper("localhost", 5000, this);
+			zk = conn.connect("localhost");
+		} catch (Exception e) {
+			System.out.println("message"+e.getMessage()); //Catch error message
+			System.out.println(e);
+			System.exit(1);
 		}
-	    	
-	    public void process(WatchedEvent event) {
-	        String path = event.getPath();
-	        
-	        System.out.println("Current Path:"+path);
-	        
-	        String rootPath="/";
+	}
 
-			if (event.getType() == Event.EventType.None) {
-				if (event.getState() == Event.KeeperState.SyncConnected) {
-					createUpdateLock();
+	public void process(WatchedEvent event) {
+		String path = event.getPath();
 
-					try {
-						// initialize any existing brokers
-						List<String> childrenList = zk.getChildren(rootPath, false);
-						for (String child : childrenList) {
-							String uri = null;
-							byte[] bytes = zk.getData(rootPath + child, false, null);
-							if (bytes == null) {
-								System.out.println("[error] initialize getData data null! - path = " +
-										rootPath + child);
-								System.exit(1);
-							}
-							uri = new String(bytes);
-							MG.addNode(child, uri);
-						}
-					} catch (KeeperException e) {
-						System.out.println("[error] initialize getData - path = " +
-								e.getPath() + " code = " + e.getCode() + " e: " + e);
-						System.exit(1);
-					} catch (InterruptedException e) {
-						System.out.println("[error] initialize getData - e = " + e);
-						System.exit(1);
-					}
+		System.out.println("[info] processing event: path: " + path + ", type: " + event.getType());
 
-					updateZK();
-
-					releaseUpdateLock();
-				} else {
-					System.out.println("weird event??? state = " + event.getState() + " - " + event);
+		if (event.getType() == Event.EventType.None) {
+			if (event.getState() == Event.KeeperState.SyncConnected) {
+				createUpdateLock();
+				try {
+					handleNewBroker();
+				} catch (KeeperException e) {
+					System.out.println("[error] syncconnencted handleNewBroker - path = " + e.getPath() +
+							" code = " + e.getCode() + " e: " + e);
+					System.exit(1);
+				} catch (InterruptedException e) {
+					System.out.println("[error] syncconnencted handleNewBroker - e = " + e);
 					System.exit(1);
 				}
-	        } else if (event.getType() == Event.EventType.NodeChildrenChanged) {
-		    } else if (event.getType() == Event.EventType.NodeDeleted) {
-		        System.out.println("Node Delete Event: " + path);
-
-				assert(path.endsWith("alive"));
-
-				acquireUpdateLock();
-
-				// update graph
-				MainGraph newMG = new MainGraph(MG.max_hop);
-				for (Node n : MG.graph.getEachNode()) {
-					String name = n.getAttribute("name");
-					String uri = n.getAttribute("uri");
-
-					// skip removed broker ( /(1) <name> /alive(-6) )
-					if (name.equals(path.substring(1, path.length() - 6)))
-						continue;
-
-					newMG.addNode(name, uri);
-				}
-				MG = newMG;
-
-				updateZK();
-
-				releaseUpdateLock();
+			} else {
+				System.out.println("[error] weird event??? state = " + event.getState() + " - " + event);
+				System.exit(1);
 			}
-		}
 
-		// must be called with zookeeper update lock
-		private void updateZK() {
+		} else if (event.getType() == Event.EventType.NodeChildrenChanged) {
+			assert(path.equals(ROOTPATH));
 			try {
-				for (Node broker : MG.graph.getEachNode()) {
-					String bidPath = "/" + broker.getAttribute("name");
-
-					// clean existing children
-					List<String> children = zk.getChildren(bidPath, false);
-					for (String child : children) {
-						if (child.equals("alive"))
-							continue;
-
-						String childPath = bidPath + "/" + child;
-						Stat bidStat = zk.exists(childPath, false);
-						zk.delete(childPath, bidStat.getVersion());
-						System.out.println("deleted old neighbour path = " + childPath);
-					}
-
-					// add new children
-					Iterator<Node> neighboursIter = broker.getNeighborNodeIterator();
-					while(neighboursIter.hasNext()) {
-						Node neighbour = neighboursIter.next();
-						String neighbourPath = bidPath + "/" + neighbour.getAttribute("name");
-						String neighbourUri = neighbour.getAttribute("uri");
-						zk.create(neighbourPath, neighbourUri.getBytes(),
-								ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-						System.out.println("created neighbour path = " +
-								neighbourPath + " data = " + neighbourUri);
-					}
-				}
+				handleNewBroker();
 			} catch (KeeperException e) {
-				System.out.println("[error] updateZK - path = " + e.getPath() +
+				System.out.println("[error] childrenchanged handleNewBroker - path = " + e.getPath() +
 						" code = " + e.getCode() + " e: " + e);
 				System.exit(1);
 			} catch (InterruptedException e) {
-				System.out.println("[error] updateZK - e = " + e);
+				System.out.println("[error] childrenchanged handleNewBroker - e = " + e);
+				System.exit(1);
+			}
+
+		} else if (event.getType() == Event.EventType.NodeDeleted) {
+			assert(path.endsWith(ALIVENAME));
+
+			try {
+				handleDeadBroker(path);
+			} catch (KeeperException e) {
+				System.out.println("[error] nodedeleted handleDeadBroker - path = " + e.getPath() +
+						" code = " + e.getCode() + " e: " + e);
+				System.exit(1);
+			} catch (InterruptedException e) {
+				System.out.println("[error] nodedeleted handleDeadBroker - e = " + e);
 				System.exit(1);
 			}
 		}
+	}
 
-		// TODO: ensure only 1 daemon running (and allow for daemon to be
-		// restarted) with PID node of currently running daemon
-		private void createUpdateLock() {
-			try {
-				byte[] b = { (byte) 1 };
-				Stat lockStat = zk.exists(LOCKPATH, false);
-				if (lockStat != null) {
-					System.out.println("[warn] lock already exists make sure no other daemons are running...");
-					zk.setData(LOCKPATH, b, lockStat.getVersion());
-				} else {
-					zk.create(LOCKPATH, b, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+	private synchronized void handleDeadBroker(String path) throws KeeperException, InterruptedException {
+		acquireUpdateLock();
+
+		// update graph
+		MainGraph newMG = new MainGraph(MG.max_hop);
+		for (Node n : MG.graph.getEachNode()) {
+			String name = n.getId();
+			String uri = n.getAttribute("uri");
+
+			// skip removed broker ( /(1) <name> /alive(-6) )
+			if (name.equals(path.substring(1, path.length() - 6)))
+				continue;
+
+			newMG.addNode(name, uri);
+		}
+		MG = newMG;
+
+		updateZK();
+
+		releaseUpdateLock();
+	}
+
+	private synchronized void handleNewBroker() throws KeeperException, InterruptedException {
+		acquireUpdateLock();
+		List<String> brokerList = zk.getChildren(ROOTPATH, true);
+		HashSet<String> diffBrokers = new HashSet<String>(brokerList);
+		diffBrokers.removeAll(oldBrokers);
+
+		while (!diffBrokers.isEmpty()) {
+			for (String broker : diffBrokers) {
+				if (EXCLUDE.contains(broker))
+					continue;
+				String brokerPath = ROOTPATH + broker;
+				String alivePath = brokerPath + "/alive";
+
+				byte[] b = zk.getData(brokerPath, false, null);
+				Stat aliveStat = zk.exists(alivePath, true);
+				if (aliveStat == null)
+					System.out.println("[error] broker not alive path = " + brokerPath);
+
+				MG.addNode(broker, new String(b));
+
+				writeNeighboursZK(MG.graph.getNode(broker));
+			}
+			oldBrokers = new HashSet<String>(brokerList);
+			brokerList = zk.getChildren(ROOTPATH, true);
+			diffBrokers = new HashSet<String>(brokerList);
+			diffBrokers.removeAll(oldBrokers);
+		}
+		releaseUpdateLock();
+	}
+
+	private void updateZK() throws KeeperException, InterruptedException {
+		for (Node broker : MG.graph.getEachNode()) {
+			String brokerPath = ROOTPATH + broker.getId();
+
+			// clean existing neighbours
+			List<String> neighbours = zk.getChildren(brokerPath, false);
+			for (String neighbour : neighbours) {
+				if (neighbour.equals("alive"))
+					continue;
+
+				String neighbourPath = brokerPath + "/" + neighbour;
+				Stat brokerStat = zk.exists(neighbourPath, false);
+				zk.delete(neighbourPath, brokerStat.getVersion());
+				System.out.println("deleted old neighbour path = " + neighbourPath);
+			}
+
+			writeNeighboursZK(broker);
+		}
+	}
+
+	private void writeNeighboursZK(Node broker) throws KeeperException, InterruptedException {
+		Iterator<Node> neighboursIter = broker.getNeighborNodeIterator();
+		while(neighboursIter.hasNext()) {
+			Node neighbour = neighboursIter.next();
+
+			String neighbourPath = ROOTPATH + broker.getId() + "/" + neighbour.getId();
+			String neighbourUri = neighbour.getAttribute("uri");
+			zk.create(neighbourPath, neighbourUri.getBytes(),
+					ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+			System.out.println("created neighbour path = " +
+					neighbourPath + " data = " + neighbourUri);
+		}
+	}
+
+	// TODO: ensure only 1 daemon running (and allow for daemon to be
+	// restarted) with PID node of currently running daemon
+	private synchronized void createUpdateLock() {
+		try {
+			byte[] b = "0".getBytes();
+			Stat lockStat = zk.exists(LOCKPATH, false);
+			if (lockStat != null) {
+				System.out.println("[warn] lock already exists make sure no other daemons are running...");
+				zk.setData(LOCKPATH, b, lockStat.getVersion());
+			} else {
+				zk.create(LOCKPATH, b, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+			}
+		} catch (KeeperException e) {
+			System.out.println("[error] createUpdateLock - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: " + e);
+			System.exit(1);
+		} catch (InterruptedException e) {
+			System.out.println("[error] createUpdateLock - e = " + e);
+			System.exit(1);
+		}
+	}
+
+	private synchronized void acquireUpdateLock() {
+		try {
+			Stat lockStat = new Stat(); 
+			byte[] lock = zk.getData(LOCKPATH, false, lockStat);
+			assert(new String(lock).equals("0"));
+			// should not be possible to already be in an update...
+			zk.setData(LOCKPATH, "1".getBytes(), lockStat.getVersion());
+		} catch (KeeperException e) {
+			System.out.println("[error] acquireUpdateLock - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: " + e);
+			System.exit(1);
+		} catch (InterruptedException e) {
+			System.out.println("[error] acquireUpdateLock - e = " + e);
+			System.exit(1);
+		}
+	}
+
+	private synchronized void releaseUpdateLock() {
+		try {
+			Stat lockStat = new Stat(); 
+			byte[] lock = zk.getData(LOCKPATH, false, lockStat);
+			assert(new String(lock).equals("0"));
+			// should not be possible to already be out of an update...
+			zk.setData(LOCKPATH, "0".getBytes(), lockStat.getVersion());
+		} catch (KeeperException e) {
+			System.out.println("[error] releaseUpdateLock - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: " + e);
+			System.exit(1);
+		} catch (InterruptedException e) {
+			System.out.println("[error] releaseUpdateLock - e = " + e);
+			System.exit(1);
+		}
+	}
+
+	public static void main(String[] args) {
+		if (args.length != 1) {
+			System.out.println("usage: daemonprocess <max hops>");
+			System.exit(1);
+		}
+
+		BasicConfigurator.configure(); // for zookeeper logs
+		int max_hop = Integer.parseInt(args[0]);
+		new DaemonProcess(max_hop).run();
+	}
+
+	public void run() {
+		try {
+			synchronized (this) {
+				while (true) {
+					wait();
 				}
-			} catch (KeeperException e) {
-				System.out.println("[error] createUpdateLock - path = " + e.getPath() +
-						" code = " + e.getCode() + " e: " + e);
-				System.exit(1);
-			} catch (InterruptedException e) {
-				System.out.println("[error] createUpdateLock - e = " + e);
-				System.exit(1);
 			}
+		} catch (InterruptedException e) {
+			System.out.println("[info] daemon interrupted e: " + e);
 		}
-
-		private void acquireUpdateLock() {
-			try {
-				Stat lockStat = null; 
-				byte[] lock = zk.getData(LOCKPATH, false, lockStat);
-				// should not be possible to already be in an update...
-				assert((int)lock[0] == 0);
-				lock[0] = (byte) 1;
-				zk.setData(LOCKPATH, lock, lockStat.getVersion());
-			} catch (KeeperException e) {
-				System.out.println("[error] acquireUpdateLock - path = " + e.getPath() +
-						" code = " + e.getCode() + " e: " + e);
-				System.exit(1);
-			} catch (InterruptedException e) {
-				System.out.println("[error] acquireUpdateLock - e = " + e);
-				System.exit(1);
-			}
-		}
-
-		private void releaseUpdateLock() {
-			try {
-				Stat lockStat = null; 
-				byte[] lock = zk.getData(LOCKPATH, false, lockStat);
-				// should not be possible to already be out of an update...
-				assert((int)lock[0] == 1);
-				lock[0] = (byte) 0;
-				zk.setData(LOCKPATH, lock, lockStat.getVersion());
-			} catch (KeeperException e) {
-				System.out.println("[error] releaseUpdateLock - path = " + e.getPath() +
-						" code = " + e.getCode() + " e: " + e);
-				System.exit(1);
-			} catch (InterruptedException e) {
-				System.out.println("[error] releaseUpdateLock - e = " + e);
-				System.exit(1);
-			}
-		}
-
-		public static void main(String[] args){
-
-			if (args.length != 1) {
-				System.out.println("usage: daemonprocess <max hops>");
-			}
-
-			int max_hop = Integer.parseInt(args[0]);
-			DaemonProcess dp = new DaemonProcess(max_hop);
-
-			// just sleep whenever zkwatcher isn't working
-			while (true) {
-				try {
-					Thread.sleep(1000000);
-				} catch (Exception e) {
-					System.out.println("message"+e.getMessage()); //Catch error message
-				}
-			}
-		}
-
-
-	    public static void createNewGraph(int numofNodes){
-	
-		MainGraph MG=new MainGraph();
-
-		String path; // Assign path to znode 
-	 	byte[] data; // Declare data
-   
-		      try {
-		
-		    	 ZKCreate ZKObj = new ZKCreate();
-		       
-		         for(int i=0;i<numofNodes;i++){
-		        	 
-		        	 path="/zkOperations"+Integer.toString(i);
-		        	 data="My zookeeper node".getBytes();
-		        	 
-		        	
-		        	 ZKObj.create(path, data); 
-		        	 
-		        	 System.out.println("Create "+i+" node");
-		        	 	        	 
-		        	 MG.addNode(path, data.toString());
-		         }
-		         
-		         
-		         MG.print_graph();
-		         
-		      } catch (Exception e) {
-			         System.out.println("message"+e.getMessage()); //Catch error message
-			         System.out.println("message"+e.toString()); //Catch error message
-		      }
-			
-	    }
-
+	}
 }
+

@@ -1,0 +1,11 @@
+#!/bin/bash
+
+PATHSEP=':'
+
+CLASSPATH="${PADRES_HOME}/build/"
+for LIB in `ls ${PADRES_HOME}/lib/*.jar`
+do
+	CLASSPATH="${CLASSPATH}${PATHSEP}${LIB}"
+done
+
+java -cp $CLASSPATH ca.utoronto.msrg.padres.daemon.DaemonProcess $@

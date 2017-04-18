@@ -4,8 +4,10 @@ if [[ "$1" == "-b" ]]; then
 	TARGET_NAMES=( "BrokerCore" )
 elif [[ "$1" == "-c" ]]; then 
 	TARGET_NAMES=( "CLIClient" )
+elif [[ "$1" == "-d" ]]; then
+	TARGET_NAMES=( "DaemonProcess" )
 else
-	TARGET_NAMES=( "BrokerCore" "CLIClient" )
+	TARGET_NAMES=( "BrokerCore" "CLIClient" "DaemonProcess" )
 fi
 
 for i in "${TARGET_NAMES[@]}"; do
