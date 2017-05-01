@@ -2,8 +2,6 @@ package ca.utoronto.msrg.padres.daemon;
 
 import org.apache.log4j.Logger;
 import org.apache.log4j.BasicConfigurator;
-import ca.utoronto.msrg.padres.common.util.LogException;
-import ca.utoronto.msrg.padres.common.util.LogSetup;
 
 import java.util.Iterator;
 import java.util.List;
@@ -26,7 +24,8 @@ import org.graphstream.graph.Node;
 
 public class DaemonProcess implements Watcher, Runnable {
 
-	protected static Logger daemonLogger;
+	protected static Logger daemonLogger = Logger.getLogger(DaemonProcess.class);
+
 	private static final String ROOTPATH  = "/";
 	private static final String LOCKNAME  = "update_lock";
 	private static final String ALIVENAME = "alive";
@@ -40,16 +39,14 @@ public class DaemonProcess implements Watcher, Runnable {
 	private HashSet<String> oldBrokers = new HashSet<String>();
 
 	public DaemonProcess(int maxHops) {
-		daemonLogger = Logger.getLogger(DaemonProcess.class);
-
 		MG = new MainGraph(maxHops);
 		try {
 			conn = new ZooKeeperConnection();
 			zk = new ZooKeeper("localhost", 5000, this);
 			zk = conn.connect("localhost");
 		} catch (Exception e) {
-			System.out.println("message"+e.getMessage()); //Catch error message
-			System.out.println(e);
+			daemonLogger.error("message"+e.getMessage()); //Catch error message
+			daemonLogger.error(e);
 			System.exit(1);
 		}
 	}
@@ -57,7 +54,7 @@ public class DaemonProcess implements Watcher, Runnable {
 	public void process(WatchedEvent event) {
 		String path = event.getPath();
 
-		System.out.println("[info] processing event: path: " + path + ", type: " + event.getType());
+		daemonLogger.info("processing event: path: " + path + ", type: " + event.getType());
 
 		if (event.getType() == Event.EventType.None) {
 			if (event.getState() == Event.KeeperState.SyncConnected) {
@@ -65,15 +62,15 @@ public class DaemonProcess implements Watcher, Runnable {
 				try {
 					handleNewBroker();
 				} catch (KeeperException e) {
-					System.out.println("[error] syncconnencted handleNewBroker - path = " + e.getPath() +
+					daemonLogger.error("syncconnencted handleNewBroker - path = " + e.getPath() +
 							" code = " + e.getCode() + " e: " + e);
 					System.exit(1);
 				} catch (InterruptedException e) {
-					System.out.println("[error] syncconnencted handleNewBroker - e = " + e);
+					daemonLogger.error("syncconnencted handleNewBroker - e = " + e);
 					System.exit(1);
 				}
 			} else {
-				System.out.println("[error] weird event??? state = " + event.getState() + " - " + event);
+				daemonLogger.error("weird event??? state = " + event.getState() + " - " + event);
 				System.exit(1);
 			}
 
@@ -82,11 +79,11 @@ public class DaemonProcess implements Watcher, Runnable {
 			try {
 				handleNewBroker();
 			} catch (KeeperException e) {
-				System.out.println("[error] childrenchanged handleNewBroker - path = " + e.getPath() +
+				daemonLogger.error("childrenchanged handleNewBroker - path = " + e.getPath() +
 						" code = " + e.getCode() + " e: " + e);
 				System.exit(1);
 			} catch (InterruptedException e) {
-				System.out.println("[error] childrenchanged handleNewBroker - e = " + e);
+				daemonLogger.error("childrenchanged handleNewBroker - e = " + e);
 				System.exit(1);
 			}
 
@@ -96,11 +93,11 @@ public class DaemonProcess implements Watcher, Runnable {
 			try {
 				handleDeadBroker(path);
 			} catch (KeeperException e) {
-				System.out.println("[error] nodedeleted handleDeadBroker - path = " + e.getPath() +
+				daemonLogger.error("nodedeleted handleDeadBroker - path = " + e.getPath() +
 						" code = " + e.getCode() + " e: " + e);
 				System.exit(1);
 			} catch (InterruptedException e) {
-				System.out.println("[error] nodedeleted handleDeadBroker - e = " + e);
+				daemonLogger.error("nodedeleted handleDeadBroker - e = " + e);
 				System.exit(1);
 			}
 		}
@@ -116,7 +113,7 @@ public class DaemonProcess implements Watcher, Runnable {
 			String uri = n.getAttribute("uri");
 
 			// skip removed broker ( /(1) <name> /alive(-6) )
-			if (name.equals(path.substring(1, path.length() - 6)))
+			if (name.equals(path.substring(ROOTPATH.length(), path.length() - 1 - ALIVENAME.length())))
 				continue;
 
 			newMG.addNode(name, uri);
@@ -130,28 +127,39 @@ public class DaemonProcess implements Watcher, Runnable {
 
 	private synchronized void handleNewBroker() throws KeeperException, InterruptedException {
 		acquireUpdateLock();
-		List<String> brokerList = zk.getChildren(ROOTPATH, true);
+		List<String> brokerList = zk.getChildren(ROOTPATH, this);
 		HashSet<String> diffBrokers = new HashSet<String>(brokerList);
 		diffBrokers.removeAll(oldBrokers);
+
+		daemonLogger.info("diff brokers = " + diffBrokers);
 
 		while (!diffBrokers.isEmpty()) {
 			for (String broker : diffBrokers) {
 				if (EXCLUDE.contains(broker))
 					continue;
+
 				String brokerPath = ROOTPATH + broker;
-				String alivePath = brokerPath + "/alive";
+				String alivePath = brokerPath + "/" + ALIVENAME;
 
 				byte[] b = zk.getData(brokerPath, false, null);
-				Stat aliveStat = zk.exists(alivePath, true);
-				if (aliveStat == null)
-					System.out.println("[error] broker not alive path = " + brokerPath);
+				Stat aliveStat;
+				int retry = 5;
+				do {
+					aliveStat = zk.exists(alivePath, this);
+					Thread.sleep(200);
+					retry--;
+				} while (aliveStat == null && retry > 0);
+				if (aliveStat == null) {
+					daemonLogger.error("broker not alive... skipping path = " + brokerPath);
+					continue;
+				}
 
 				MG.addNode(broker, new String(b));
 
 				writeNeighboursZK(MG.graph.getNode(broker));
 			}
 			oldBrokers = new HashSet<String>(brokerList);
-			brokerList = zk.getChildren(ROOTPATH, true);
+			brokerList = zk.getChildren(ROOTPATH, this);
 			diffBrokers = new HashSet<String>(brokerList);
 			diffBrokers.removeAll(oldBrokers);
 		}
@@ -171,7 +179,7 @@ public class DaemonProcess implements Watcher, Runnable {
 				String neighbourPath = brokerPath + "/" + neighbour;
 				Stat brokerStat = zk.exists(neighbourPath, false);
 				zk.delete(neighbourPath, brokerStat.getVersion());
-				System.out.println("deleted old neighbour path = " + neighbourPath);
+				daemonLogger.info("deleted old neighbour path = " + neighbourPath);
 			}
 
 			writeNeighboursZK(broker);
@@ -187,7 +195,7 @@ public class DaemonProcess implements Watcher, Runnable {
 			String neighbourUri = neighbour.getAttribute("uri");
 			zk.create(neighbourPath, neighbourUri.getBytes(),
 					ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-			System.out.println("created neighbour path = " +
+			daemonLogger.info("created neighbour path = " +
 					neighbourPath + " data = " + neighbourUri);
 		}
 	}
@@ -199,17 +207,17 @@ public class DaemonProcess implements Watcher, Runnable {
 			byte[] b = "0".getBytes();
 			Stat lockStat = zk.exists(LOCKPATH, false);
 			if (lockStat != null) {
-				System.out.println("[warn] lock already exists make sure no other daemons are running...");
+				daemonLogger.warn("lock already exists make sure no other daemons are running...");
 				zk.setData(LOCKPATH, b, lockStat.getVersion());
 			} else {
 				zk.create(LOCKPATH, b, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
 			}
 		} catch (KeeperException e) {
-			System.out.println("[error] createUpdateLock - path = " + e.getPath() +
+			daemonLogger.error("createUpdateLock - path = " + e.getPath() +
 					" code = " + e.getCode() + " e: " + e);
 			System.exit(1);
 		} catch (InterruptedException e) {
-			System.out.println("[error] createUpdateLock - e = " + e);
+			daemonLogger.error("createUpdateLock - e = " + e);
 			System.exit(1);
 		}
 	}
@@ -222,11 +230,11 @@ public class DaemonProcess implements Watcher, Runnable {
 			// should not be possible to already be in an update...
 			zk.setData(LOCKPATH, "1".getBytes(), lockStat.getVersion());
 		} catch (KeeperException e) {
-			System.out.println("[error] acquireUpdateLock - path = " + e.getPath() +
+			daemonLogger.error("acquireUpdateLock - path = " + e.getPath() +
 					" code = " + e.getCode() + " e: " + e);
 			System.exit(1);
 		} catch (InterruptedException e) {
-			System.out.println("[error] acquireUpdateLock - e = " + e);
+			daemonLogger.error("acquireUpdateLock - e = " + e);
 			System.exit(1);
 		}
 	}
@@ -239,18 +247,18 @@ public class DaemonProcess implements Watcher, Runnable {
 			// should not be possible to already be out of an update...
 			zk.setData(LOCKPATH, "0".getBytes(), lockStat.getVersion());
 		} catch (KeeperException e) {
-			System.out.println("[error] releaseUpdateLock - path = " + e.getPath() +
+			daemonLogger.error("releaseUpdateLock - path = " + e.getPath() +
 					" code = " + e.getCode() + " e: " + e);
 			System.exit(1);
 		} catch (InterruptedException e) {
-			System.out.println("[error] releaseUpdateLock - e = " + e);
+			daemonLogger.error("releaseUpdateLock - e = " + e);
 			System.exit(1);
 		}
 	}
 
 	public static void main(String[] args) {
 		if (args.length != 1) {
-			System.out.println("usage: daemonprocess <max hops>");
+			daemonLogger.error("usage: daemonprocess <max hops>");
 			System.exit(1);
 		}
 
@@ -267,7 +275,7 @@ public class DaemonProcess implements Watcher, Runnable {
 				}
 			}
 		} catch (InterruptedException e) {
-			System.out.println("[info] daemon interrupted e: " + e);
+			daemonLogger.info("daemon interrupted e: " + e);
 		}
 	}
 }
