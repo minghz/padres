@@ -26,12 +26,10 @@ public class DaemonProcess implements Watcher, Runnable {
 
 	protected static Logger daemonLogger = Logger.getLogger(DaemonProcess.class);
 
-	private static final String ROOTPATH  = "/";
-	private static final String LOCKNAME  = "update_lock";
-	private static final String ALIVENAME = "alive";
-	private static final String LOCKPATH  = ROOTPATH + LOCKNAME;
-	private static final String[] EXCLUDE_VALUES = new String[] { "update_lock", "zookeeper" };
-	private static final HashSet<String> EXCLUDE = new HashSet<String>(Arrays.asList(EXCLUDE_VALUES));
+	private static final String ROOT_PATH = "/padres";
+	private static final String GLOBAL_FLAG = "global_flag";
+	private static final String GLOBAL_FLAG_PATH = ROOT_PATH + "/" + GLOBAL_FLAG;
+	private static final String ALIVE = "/alive";
 	private ZooKeeper zk;
 	private ZooKeeperConnection conn;
 	private MainGraph MG;
@@ -58,15 +56,16 @@ public class DaemonProcess implements Watcher, Runnable {
 
 		if (event.getType() == Event.EventType.None) {
 			if (event.getState() == Event.KeeperState.SyncConnected) {
-				createUpdateLock();
+				createRootPath();
+				createUpdateFlag();
 				try {
 					handleNewBroker();
 				} catch (KeeperException e) {
 					daemonLogger.error("syncconnencted handleNewBroker - path = " + e.getPath() +
-							" code = " + e.getCode() + " e: " + e);
+							" code = " + e.getCode() + " e: ", e);
 					System.exit(1);
 				} catch (InterruptedException e) {
-					daemonLogger.error("syncconnencted handleNewBroker - e = " + e);
+					daemonLogger.error("syncconnencted handleNewBroker - e = ", e);
 					System.exit(1);
 				}
 			} else {
@@ -75,46 +74,47 @@ public class DaemonProcess implements Watcher, Runnable {
 			}
 
 		} else if (event.getType() == Event.EventType.NodeChildrenChanged) {
-			assert(path.equals(ROOTPATH));
+			assert(path.equals(ROOT_PATH));
 			try {
 				handleNewBroker();
 			} catch (KeeperException e) {
 				daemonLogger.error("childrenchanged handleNewBroker - path = " + e.getPath() +
-						" code = " + e.getCode() + " e: " + e);
+						" code = " + e.getCode() + " e: ", e);
 				System.exit(1);
 			} catch (InterruptedException e) {
-				daemonLogger.error("childrenchanged handleNewBroker - e = " + e);
+				daemonLogger.error("childrenchanged handleNewBroker - e = ", e);
 				System.exit(1);
 			}
 
 		} else if (event.getType() == Event.EventType.NodeDeleted) {
-			assert(path.endsWith(ALIVENAME));
-
+			assert(path.endsWith(ALIVE));
 			try {
 				handleDeadBroker(path);
 			} catch (KeeperException e) {
 				daemonLogger.error("nodedeleted handleDeadBroker - path = " + e.getPath() +
-						" code = " + e.getCode() + " e: " + e);
+						" code = " + e.getCode() + " e: ", e);
 				System.exit(1);
 			} catch (InterruptedException e) {
-				daemonLogger.error("nodedeleted handleDeadBroker - e = " + e);
+				daemonLogger.error("nodedeleted handleDeadBroker - e = ", e);
 				System.exit(1);
 			}
 		}
 	}
 
 	private synchronized void handleDeadBroker(String path) throws KeeperException, InterruptedException {
-		acquireUpdateLock();
+		setGlobalFlag();
 
-		// update graph
+		// remove node from old graph ( /padres/|start|<brokerid>|end|/alive )
+		int start = ROOT_PATH.length() + 1;
+		int end = path.length() - ALIVE.length() - 1;
+		String broker = path.substring(start, end);
+		MG.graph.removeNode(broker);
+
+		// create new graph
 		MainGraph newMG = new MainGraph(MG.max_hop);
 		for (Node n : MG.graph.getEachNode()) {
 			String name = n.getId();
 			String uri = n.getAttribute("uri");
-
-			// skip removed broker ( /(1) <name> /alive(-6) )
-			if (name.equals(path.substring(ROOTPATH.length(), path.length() - 1 - ALIVENAME.length())))
-				continue;
 
 			newMG.addNode(name, uri);
 		}
@@ -122,12 +122,12 @@ public class DaemonProcess implements Watcher, Runnable {
 
 		updateZK();
 
-		releaseUpdateLock();
+		unsetGlobalFlag();
 	}
 
 	private synchronized void handleNewBroker() throws KeeperException, InterruptedException {
-		acquireUpdateLock();
-		List<String> brokerList = zk.getChildren(ROOTPATH, this);
+		setGlobalFlag();
+		List<String> brokerList = zk.getChildren(ROOT_PATH, this);
 		HashSet<String> diffBrokers = new HashSet<String>(brokerList);
 		diffBrokers.removeAll(oldBrokers);
 
@@ -135,11 +135,11 @@ public class DaemonProcess implements Watcher, Runnable {
 
 		while (!diffBrokers.isEmpty()) {
 			for (String broker : diffBrokers) {
-				if (EXCLUDE.contains(broker))
+				if (broker.equals(GLOBAL_FLAG))
 					continue;
 
-				String brokerPath = ROOTPATH + broker;
-				String alivePath = brokerPath + "/" + ALIVENAME;
+				String brokerPath = ROOT_PATH  + "/" + broker;
+				String alivePath  = brokerPath + "/" + ALIVE;
 
 				byte[] b = zk.getData(brokerPath, false, null);
 				Stat aliveStat;
@@ -159,16 +159,16 @@ public class DaemonProcess implements Watcher, Runnable {
 				writeNeighboursZK(MG.graph.getNode(broker));
 			}
 			oldBrokers = new HashSet<String>(brokerList);
-			brokerList = zk.getChildren(ROOTPATH, this);
+			brokerList = zk.getChildren(ROOT_PATH, this);
 			diffBrokers = new HashSet<String>(brokerList);
 			diffBrokers.removeAll(oldBrokers);
 		}
-		releaseUpdateLock();
+		unsetGlobalFlag();
 	}
 
 	private void updateZK() throws KeeperException, InterruptedException {
 		for (Node broker : MG.graph.getEachNode()) {
-			String brokerPath = ROOTPATH + broker.getId();
+			String brokerPath = ROOT_PATH + "/" + broker.getId();
 
 			// clean existing neighbours
 			List<String> neighbours = zk.getChildren(brokerPath, false);
@@ -191,7 +191,7 @@ public class DaemonProcess implements Watcher, Runnable {
 		while(neighboursIter.hasNext()) {
 			Node neighbour = neighboursIter.next();
 
-			String neighbourPath = ROOTPATH + broker.getId() + "/" + neighbour.getId();
+			String neighbourPath = ROOT_PATH + "/" + broker.getId() + "/" + neighbour.getId();
 			String neighbourUri = neighbour.getAttribute("uri");
 			zk.create(neighbourPath, neighbourUri.getBytes(),
 					ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
@@ -200,58 +200,74 @@ public class DaemonProcess implements Watcher, Runnable {
 		}
 	}
 
-	// TODO: ensure only 1 daemon running (and allow for daemon to be
-	// restarted) with PID node of currently running daemon
-	private synchronized void createUpdateLock() {
+	private void createRootPath() {
 		try {
-			byte[] b = "0".getBytes();
-			Stat lockStat = zk.exists(LOCKPATH, false);
-			if (lockStat != null) {
-				daemonLogger.warn("lock already exists make sure no other daemons are running...");
-				zk.setData(LOCKPATH, b, lockStat.getVersion());
-			} else {
-				zk.create(LOCKPATH, b, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+			Stat s = zk.exists(ROOT_PATH, false);
+			if (s == null) {
+				zk.create(ROOT_PATH, "".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
 			}
 		} catch (KeeperException e) {
-			daemonLogger.error("createUpdateLock - path = " + e.getPath() +
-					" code = " + e.getCode() + " e: " + e);
+			daemonLogger.error("createRootPath - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: ", e);
 			System.exit(1);
 		} catch (InterruptedException e) {
-			daemonLogger.error("createUpdateLock - e = " + e);
+			daemonLogger.error("createRootPath - e = ", e);
 			System.exit(1);
 		}
 	}
 
-	private synchronized void acquireUpdateLock() {
+	// TODO: ensure only 1 daemon running (and allow for daemon to be
+	// restarted) with PID node of currently running daemon
+	private synchronized void createUpdateFlag() {
 		try {
-			Stat lockStat = new Stat(); 
-			byte[] lock = zk.getData(LOCKPATH, false, lockStat);
-			assert(new String(lock).equals("0"));
+			byte[] b = "0".getBytes();
+			Stat flagStat = zk.exists(GLOBAL_FLAG_PATH, false);
+			if (flagStat != null) {
+				daemonLogger.warn("flag already exists make sure no other daemons are running...");
+				zk.setData(GLOBAL_FLAG_PATH, b, flagStat.getVersion());
+			} else {
+				zk.create(GLOBAL_FLAG_PATH, b, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+			}
+		} catch (KeeperException e) {
+			daemonLogger.error("createUpdateFlag - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: ", e);
+			System.exit(1);
+		} catch (InterruptedException e) {
+			daemonLogger.error("createUpdateFlag - e = ", e);
+			System.exit(1);
+		}
+	}
+
+	private synchronized void setGlobalFlag() {
+		try {
+			Stat flagStat = new Stat(); 
+			byte[] flag = zk.getData(GLOBAL_FLAG_PATH, false, flagStat);
+			assert(new String(flag).equals("0"));
 			// should not be possible to already be in an update...
-			zk.setData(LOCKPATH, "1".getBytes(), lockStat.getVersion());
+			zk.setData(GLOBAL_FLAG_PATH, "1".getBytes(), flagStat.getVersion());
 		} catch (KeeperException e) {
-			daemonLogger.error("acquireUpdateLock - path = " + e.getPath() +
-					" code = " + e.getCode() + " e: " + e);
+			daemonLogger.error("setGlobalFlag - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: ", e);
 			System.exit(1);
 		} catch (InterruptedException e) {
-			daemonLogger.error("acquireUpdateLock - e = " + e);
+			daemonLogger.error("setGlobalFlag - e = ", e);
 			System.exit(1);
 		}
 	}
 
-	private synchronized void releaseUpdateLock() {
+	private synchronized void unsetGlobalFlag() {
 		try {
-			Stat lockStat = new Stat(); 
-			byte[] lock = zk.getData(LOCKPATH, false, lockStat);
-			assert(new String(lock).equals("0"));
+			Stat flagStat = new Stat(); 
+			byte[] flag = zk.getData(GLOBAL_FLAG_PATH, false, flagStat);
+			assert(new String(flag).equals("0"));
 			// should not be possible to already be out of an update...
-			zk.setData(LOCKPATH, "0".getBytes(), lockStat.getVersion());
+			zk.setData(GLOBAL_FLAG_PATH, "0".getBytes(), flagStat.getVersion());
 		} catch (KeeperException e) {
-			daemonLogger.error("releaseUpdateLock - path = " + e.getPath() +
-					" code = " + e.getCode() + " e: " + e);
+			daemonLogger.error("unsetGlobalFlag - path = " + e.getPath() +
+					" code = " + e.getCode() + " e: ", e);
 			System.exit(1);
 		} catch (InterruptedException e) {
-			daemonLogger.error("releaseUpdateLock - e = " + e);
+			daemonLogger.error("unsetGlobalFlag - e = ", e);
 			System.exit(1);
 		}
 	}
@@ -275,7 +291,7 @@ public class DaemonProcess implements Watcher, Runnable {
 				}
 			}
 		} catch (InterruptedException e) {
-			daemonLogger.info("daemon interrupted e: " + e);
+			daemonLogger.info("daemon interrupted e: ", e);
 		}
 	}
 }

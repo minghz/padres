@@ -20,6 +20,9 @@ import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.HashSet;
 
 import javax.swing.Timer;
 
@@ -234,22 +237,26 @@ public class BrokerCore {
 		brokerCoreLogger.info("BrokerCore is started.");
 	}
 
+	// this is duplicated in DaemonProcess should consolidate...
+	private static final String ROOTPATH  = "/padres";
+	private static final String ALIVE = "alive";
+
 	protected class ZKConnect implements Watcher {
-		ZooKeeper zk;
+		private ZooKeeper zk;
 
 		public ZKConnect(String zkHost) throws BrokerCoreException {
 			try {
 				this.zk = new ZooKeeper(zkHost, 5000, this);
 			} catch (IOException e) {
-				throw new BrokerCoreException("Failed to connect to ZooKeeper: " + zkHost + " with: " + e);
+				throw new BrokerCoreException("Failed to connect to ZooKeeper: " + zkHost + " with: ", e);
 			}
 		}
 
 		public void process(WatchedEvent we) {
 			if (we.getState() == Event.KeeperState.SyncConnected) {
 				try {
-					String brokerPath = '/' + getBrokerNodeID();
-					String alivePath = brokerPath + "/alive";
+					String brokerPath = ROOTPATH   + "/" + getBrokerNodeID();
+					String alivePath  = brokerPath + "/" + ALIVE;
 
 					Stat bidStat = zk.exists(brokerPath, false);
 					if (bidStat != null) {
@@ -258,14 +265,14 @@ public class BrokerCore {
 							// cleanup old broker data
 							List<String> children = zk.getChildren(brokerPath, false);
 							for (String child : children) {
-								String childpath = brokerPath+"/"+child;
+								String childpath = brokerPath + "/" + child;
 								Stat childstat = zk.exists(childpath, false);
 								zk.delete(childpath, bidStat.getVersion());
 							}
 							zk.delete(brokerPath, bidStat.getVersion());
 						} else {
 							// uri binding should fail and crash before this...
-							brokerCoreLogger.error("broker "+brokerPath+" is still alive...");
+							brokerCoreLogger.error("broker " + brokerPath + " is still alive...");
 							System.exit(1);
 						}
 					}
@@ -279,7 +286,7 @@ public class BrokerCore {
 					// try handling regardless to avoid zookeeper not triggering update
 					bidWatcher.handleChildrenChange(brokerPath);
 				} catch (Exception e) {
-					brokerCoreLogger.error("watcher failed: " + e);
+					brokerCoreLogger.error("watcher failed: ", e);
 					// TODO: can maybe retry zookeeper connection, but if the broker's zk
 					// path isn't setup right correctly the broker should die
 					System.exit(1);
@@ -293,7 +300,6 @@ public class BrokerCore {
 
 	protected class BidWatcher implements Watcher {
 		ZooKeeper zk;
-		String brokerPath;
 
 		public BidWatcher(ZooKeeper zk) {
 			this.zk = zk;
@@ -309,6 +315,20 @@ public class BrokerCore {
 		}
 
 		private void handleChildrenChange(String brokerPath) {
+
+			brokerCoreLogger.info("[david] HIHIHI adv b: " + getBrokerID() + " msg count: " + getAdvertisements().values().size());
+			for (Map.Entry<String, AdvertisementMessage> e : getAdvertisements().entrySet()) {
+				brokerCoreLogger.info("[david] adv b: " + getBrokerID() + " | key: " + e.getKey() + " | msg: " + e.getValue() + " | lasthopid: " + e.getValue().getLastHopID().getDestinationType());
+			}
+			brokerCoreLogger.info("[david] HIHIHI sub b: " + getBrokerID() + " msg count: " + getSubscriptions().values().size());
+			for (Map.Entry<String, SubscriptionMessage> e : getSubscriptions().entrySet()) {
+				brokerCoreLogger.info("[david] sub b: " + getBrokerID() + " | key: " + e.getKey() + " | msg: " + e.getValue() + " | lasthopid: " + e.getValue().getLastHopID().getDestinationType());
+			}
+			brokerCoreLogger.info("[david] HIHIHI rsub b: " + getBrokerID() + " msg count: " + router.getRoutedSubs().values().size());
+			for (Map.Entry<String, Set<MessageDestination>> e : router.getRoutedSubs().entrySet()) {
+				brokerCoreLogger.info("[david] rsub b: " + getBrokerID() + " | key: " + e.getKey() + " | msg: " + e.getValue());
+			}
+
 			try {
 				//TODO: phase 1: cleanup
 				//TODO: 	a. freeze message sending
@@ -323,7 +343,30 @@ public class BrokerCore {
 				sendUpdates(brokerPath);
 
 			} catch (Exception e) {
-				brokerCoreLogger.error("handleChildrenChange failed: " + e);
+				brokerCoreLogger.error("handleChildrenChange failed: ", e);
+			}
+		}
+
+		private void reSendAdvSub () {
+			String[] exclude_class_names = new String[] { "BROKER_CONTROL", "BROKER_INFO",
+				"BROKER_MONITOR", "GLOBAL_FD", "HEARTBEAT_MANAGER", "NETWORK_DISCOVERY",
+				"TRACEROUTE_MESSAGE" };
+			HashSet<String> exclude_classes = new HashSet<String>(Arrays.asList(exclude_class_names));
+
+			for (AdvertisementMessage advmsg : getAdvertisements().values()) {
+				if (!exclude_classes.contains(advmsg.getAdvertisement().getClassVal()) 
+						&& advmsg.getLastHopID().getDestinationType().contains(DestinationType.CLIENT)) {
+					// TODO: send adv
+					queueManager.enQueue(advmsg.duplicate(), MessageDestination.INPUTQUEUE);
+				}
+			}
+
+			for (SubscriptionMessage submsg : getSubscriptions().values()) {
+				if (!exclude_classes.contains(submsg.getSubscription().getClassVal()) 
+						&& submsg.getLastHopID().getDestinationType().contains(DestinationType.CLIENT)) {
+					// TODO: send sub
+					queueManager.enQueue(submsg.duplicate(), MessageDestination.INPUTQUEUE);
+				}
 			}
 		}
 
@@ -333,10 +376,11 @@ public class BrokerCore {
 			Collections.sort(children);
 			do {
 				for (String child : children) {
-					if (child.equals("alive")) // skip its this broker's alive zknode
+					String childPath = brokerPath + "/" + child;
+					if (childPath.endsWith(ALIVE)) // skip its this broker's alive zknode
 						continue;
 					String neighborURI;
-					byte[] b = zk.getData(brokerPath+"/"+child, false, null);
+					byte[] b = zk.getData(childPath, false, null);
 					neighborURI = new String(b);
 
 					Publication p = MessageFactory.createEmptyPublication();
@@ -345,8 +389,7 @@ public class BrokerCore {
 					p.addPair("command", "OVERLAY-UPDATE");
 					p.addPair("broker", neighborURI);
 					PublicationMessage pm = new PublicationMessage(p, "initial_connect");
-					if (brokerCoreLogger.isDebugEnabled())
-						brokerCoreLogger.debug("Broker " + getBrokerID()
+					brokerCoreLogger.debug("Broker " + getBrokerID()
 								+ " is sending initial connection to broker " + neighborURI);
 					queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
 				}
