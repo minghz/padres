@@ -354,7 +354,7 @@ public class BrokerCore {
 			if (new String(b).equals("0"))
 				return;
 
-			//saveAndCleanState();
+			saveAndCleanState();
 
 			// create new connections
 			List<String> neighbours = zk.getChildren(BROKER_PATH, false);
@@ -416,10 +416,10 @@ public class BrokerCore {
 			savedAdvs.clear();
 			savedSubs.clear();
 
-			saveAndCleanMsgs(getAdvertisements(), savedAdvs);
+			saveAndCleanAdvs();
 			brokerCoreLogger.debug("b = " + getBrokerID() + " workingAdvs = " + getAdvertisements());
 			brokerCoreLogger.debug("b = " + getBrokerID() + " savedAdvs = " + savedAdvs);
-			saveAndCleanMsgs(getSubscriptions(), savedSubs);
+			saveAndCleanSubs();
 			brokerCoreLogger.debug("b = " + getBrokerID() + " workingSubs = " + getSubscriptions());
 			brokerCoreLogger.debug("b = " + getBrokerID() + " savedSubs = " + savedSubs);
 
@@ -428,21 +428,47 @@ public class BrokerCore {
 		}
 
 		// TODO: switch to .forEachValue for concurrency?
-		private <T extends Message> void saveAndCleanMsgs(Map<String, T> msgMap, Map<String, T> saveMap) {
-			Iterator<Map.Entry<String, T>> iter = msgMap.entrySet().iterator();
+		private void saveAndCleanAdvs() {
+			Iterator<Map.Entry<String, AdvertisementMessage>> iter = getAdvertisements().entrySet().iterator();
 			while (iter.hasNext()) {
-				Map.Entry<String, T> e = iter.next();
-				T msg = e.getValue();
+				Map.Entry<String, AdvertisementMessage> e = iter.next();
+				String msgId = e.getKey();
+				AdvertisementMessage msg = e.getValue();
 				EnumSet<DestinationType> dstType = msg.getLastHopID().getDestinationType();
+
 				// if last hop is a system interal do not save or remove it
 				// if last hop is a client save it to resend
 				// if it is anything else (routing + connection) remove
-				if (dstType.contains(DestinationType.INTERNAL))
-					continue;
-				else if (dstType.contains(DestinationType.CLIENT))
-					saveMap.put(msg.getMessageID(), msg);
-				else {
-					brokerCoreLogger.debug("b = " + getBrokerID() + " removing = " + iter);
+				// note: just checking for destination type internal works for subs, but not advs
+				//if (dstType.contains(DestinationType.INTERNAL))
+				if (dstType.contains(DestinationType.CLIENT)) {
+					savedAdvs.put(msg.getMessageID(), msg);
+				} else if (!msgId.startsWith(getBrokerID()) ||
+						!EXCLUDE_CLASSES.contains(msg.getAdvertisement().getClassVal())) {
+					brokerCoreLogger.debug("b = " + getBrokerID() + " removing adv = " + e);
+					iter.remove();
+				}
+			}
+		}
+
+		private void saveAndCleanSubs() {
+			Iterator<Map.Entry<String, SubscriptionMessage>> iter = getSubscriptions().entrySet().iterator();
+			while (iter.hasNext()) {
+				Map.Entry<String, SubscriptionMessage> e = iter.next();
+				String msgId = e.getKey();
+				SubscriptionMessage msg = e.getValue();
+				EnumSet<DestinationType> dstType = msg.getLastHopID().getDestinationType();
+
+				// if last hop is a system interal do not save or remove it
+				// if last hop is a client save it to resend
+				// if it is anything else (routing + connection) remove
+				// note: just checking for destination type internal works for subs, but not advs
+				//if (dstType.contains(DestinationType.INTERNAL))
+				if (dstType.contains(DestinationType.CLIENT)) {
+					savedSubs.put(msg.getMessageID(), msg);
+				} else if (!msgId.startsWith(getBrokerID()) ||
+						!EXCLUDE_CLASSES.contains(msg.getSubscription().getClassVal())) {
+					brokerCoreLogger.debug("b = " + getBrokerID() + " removing sub = " + e);
 					iter.remove();
 				}
 			}
