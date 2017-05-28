@@ -23,6 +23,9 @@ import java.util.Collections;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Iterator;
+import java.util.EnumSet;
 
 import javax.swing.Timer;
 
@@ -284,11 +287,22 @@ public class BrokerCore {
 		private String BROKER_FLAG_PATH;
 		private ZooKeeper zk;
 
+		private String[] EXCLUDE_CLASS_NAMES = new String[] { "BROKER_CONTROL", "BROKER_INFO",
+			"BROKER_MONITOR", "GLOBAL_FD", "HEARTBEAT_MANAGER", "NETWORK_DISCOVERY",
+			"TRACEROUTE_MESSAGE" };
+		private HashSet<String> EXCLUDE_CLASSES = new HashSet<String>(Arrays.asList(EXCLUDE_CLASS_NAMES));
+
+
+		private Map<String, AdvertisementMessage> savedAdvs;
+		private Map<String, SubscriptionMessage> savedSubs;
+
 		public BrokerWatcher(ZooKeeper zk, String brokerId) throws KeeperException, InterruptedException {
 			this.zk = zk;
 			BROKER_PATH      = ROOT_PATH   + "/" + brokerId;
 			ALIVE_PATH       = BROKER_PATH + "/" + ALIVE;
 			BROKER_FLAG_PATH = BROKER_PATH + "/" + BROKER_FLAG;
+			savedAdvs = new ConcurrentHashMap<String, AdvertisementMessage>();
+			savedSubs = new ConcurrentHashMap<String, SubscriptionMessage>();
 
 			Stat bs = zk.exists(BROKER_PATH, false);
 			if (bs != null) {
@@ -335,36 +349,12 @@ public class BrokerCore {
 		}
 
 		private void doUpdate() throws KeeperException, InterruptedException {
+			long t0 = System.nanoTime();
 			byte[] b = zk.getData(BROKER_FLAG_PATH, false, null);
 			if (new String(b).equals("0"))
 				return;
 
-			brokerCoreLogger.info("[david] HIHIHI adv b: " + getBrokerID() + " msg count: "
-					+ getAdvertisements().values().size());
-			for (Map.Entry<String, AdvertisementMessage> e : getAdvertisements().entrySet()) {
-				brokerCoreLogger.info("[david] adv b: " + getBrokerID() + " | key: " + e.getKey()
-						+ " | msg: " + e.getValue() + " | lasthopid: "
-						+ e.getValue().getLastHopID().getDestinationType());
-			}
-			brokerCoreLogger.info("[david] HIHIHI sub b: " + getBrokerID() + " msg count: "
-					+ getSubscriptions().values().size());
-			for (Map.Entry<String, SubscriptionMessage> e : getSubscriptions().entrySet()) {
-				brokerCoreLogger.info("[david] sub b: " + getBrokerID() + " | key: " + e.getKey()
-						+ " | msg: " + e.getValue() + " | lasthopid: "
-						+ e.getValue().getLastHopID().getDestinationType());
-			}
-			brokerCoreLogger.info("[david] HIHIHI rsub b: " + getBrokerID() + " msg count: "
-					+ router.getRoutedSubs().values().size());
-			for (Map.Entry<String, Set<MessageDestination>> e : router.getRoutedSubs().entrySet()) {
-				brokerCoreLogger.info("[david] rsub b: " + getBrokerID() + " | key: " + e.getKey()
-						+ " | msg: " + e.getValue());
-			}
-
-
-			// cleanup old routes
-			// cleanup old connections
-			// TODO FIXME !!!!
-
+			//saveAndCleanState();
 
 			// create new connections
 			List<String> neighbours = zk.getChildren(BROKER_PATH, false);
@@ -397,6 +387,8 @@ public class BrokerCore {
 			b = zk.getData(GLOBAL_FLAG_PATH, this, null);
 			if (new String(b).equals("0"))
 				resumeWork();
+			long t1 = System.nanoTime();
+			brokerCoreLogger.info("doUpdate = " + (t1 - t0) + "ns");
 		}
 
 		private void resumeWork() throws KeeperException, InterruptedException {
@@ -406,8 +398,7 @@ public class BrokerCore {
 			if (new String(b).equals("1"))
 				return;
 
-			// resend adv/sub
-			// TODO FIXME !!!!
+			reSendAdvSub();
 
 			// check/watch broker flag for update
 			tryUpdate();
@@ -420,26 +411,69 @@ public class BrokerCore {
 				doUpdate();
 		}
 
-		private void reSendAdvSub () {
-			String[] exclude_class_names = new String[] { "BROKER_CONTROL", "BROKER_INFO",
-				"BROKER_MONITOR", "GLOBAL_FD", "HEARTBEAT_MANAGER", "NETWORK_DISCOVERY",
-				"TRACEROUTE_MESSAGE" };
-			HashSet<String> exclude_classes = new HashSet<String>(Arrays.asList(exclude_class_names));
+		// TODO: clean up old connections + missing message types + possibly other unknown things
+		private void saveAndCleanState() {
+			savedAdvs.clear();
+			savedSubs.clear();
 
-			for (AdvertisementMessage advmsg : getAdvertisements().values()) {
-				if (!exclude_classes.contains(advmsg.getAdvertisement().getClassVal()) 
-						&& advmsg.getLastHopID().getDestinationType().contains(DestinationType.CLIENT)) {
-					// TODO: send adv
-					queueManager.enQueue(advmsg.duplicate(), MessageDestination.INPUTQUEUE);
+			saveAndCleanMsgs(getAdvertisements(), savedAdvs);
+			brokerCoreLogger.debug("b = " + getBrokerID() + " workingAdvs = " + getAdvertisements());
+			brokerCoreLogger.debug("b = " + getBrokerID() + " savedAdvs = " + savedAdvs);
+			saveAndCleanMsgs(getSubscriptions(), savedSubs);
+			brokerCoreLogger.debug("b = " + getBrokerID() + " workingSubs = " + getSubscriptions());
+			brokerCoreLogger.debug("b = " + getBrokerID() + " savedSubs = " + savedSubs);
+
+			saveAndCleanRoutedSubs();
+			brokerCoreLogger.debug("b = " + getBrokerID() + " routedSubs = " + router.getRoutedSubs());
+		}
+
+		// TODO: switch to .forEachValue for concurrency?
+		private <T extends Message> void saveAndCleanMsgs(Map<String, T> msgMap, Map<String, T> saveMap) {
+			Iterator<Map.Entry<String, T>> iter = msgMap.entrySet().iterator();
+			while (iter.hasNext()) {
+				Map.Entry<String, T> e = iter.next();
+				T msg = e.getValue();
+				EnumSet<DestinationType> dstType = msg.getLastHopID().getDestinationType();
+				// if last hop is a system interal do not save or remove it
+				// if last hop is a client save it to resend
+				// if it is anything else (routing + connection) remove
+				if (dstType.contains(DestinationType.INTERNAL))
+					continue;
+				else if (dstType.contains(DestinationType.CLIENT))
+					saveMap.put(msg.getMessageID(), msg);
+				else {
+					brokerCoreLogger.debug("b = " + getBrokerID() + " removing = " + iter);
+					iter.remove();
 				}
 			}
+		}
 
-			for (SubscriptionMessage submsg : getSubscriptions().values()) {
-				if (!exclude_classes.contains(submsg.getSubscription().getClassVal()) 
-						&& submsg.getLastHopID().getDestinationType().contains(DestinationType.CLIENT)) {
-					// TODO: send sub
-					queueManager.enQueue(submsg.duplicate(), MessageDestination.INPUTQUEUE);
+		private void saveAndCleanRoutedSubs() {
+			Iterator<Map.Entry<String, Set<MessageDestination>>> routedSubIter =
+				router.getRoutedSubs().entrySet().iterator();
+			while (routedSubIter.hasNext()) {
+				Map.Entry<String, Set<MessageDestination>> routedSubEntry = routedSubIter.next();
+				if (!routedSubEntry.getKey().startsWith(getBrokerID())) {
+					routedSubIter.remove();
+				} else {
+					Iterator<MessageDestination> dstIter = routedSubEntry.getValue().iterator();
+					while (dstIter.hasNext()) {
+						MessageDestination dst = dstIter.next();
+						if (!dst.getDestinationType().contains(DestinationType.INTERNAL) && !dst.getDestinationID().equals("none")) {
+							dstIter.remove();
+						}
+					}
 				}
+			}
+		}
+
+		private void reSendAdvSub() {
+			for (AdvertisementMessage advmsg : savedAdvs.values()) {
+				queueManager.enQueue(advmsg.duplicate(), MessageDestination.INPUTQUEUE);
+			}
+
+			for (SubscriptionMessage submsg : savedSubs.values()) {
+				queueManager.enQueue(submsg.duplicate(), MessageDestination.INPUTQUEUE);
 			}
 		}
 	}
