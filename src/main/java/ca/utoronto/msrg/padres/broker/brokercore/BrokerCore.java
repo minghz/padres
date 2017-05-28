@@ -36,6 +36,7 @@ import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.ZKUtil;
 
 import ca.utoronto.msrg.padres.broker.brokercore.BrokerConfig.CycleType;
 import ca.utoronto.msrg.padres.broker.controller.Controller;
@@ -229,17 +230,12 @@ public class BrokerCore {
 		initHeartBeatPublisher();
 		initHeartBeatSubscriber();
 		initWebInterface();
-		//initNeighborConnections();
 		initManagementInterface();
 		initConsoleInterface();
 		initZKConnection();
 		running = true;
 		brokerCoreLogger.info("BrokerCore is started.");
 	}
-
-	// this is duplicated in DaemonProcess should consolidate...
-	private static final String ROOTPATH  = "/padres";
-	private static final String ALIVE = "alive";
 
 	protected class ZKConnect implements Watcher {
 		private ZooKeeper zk;
@@ -252,43 +248,21 @@ public class BrokerCore {
 			}
 		}
 
+		// TODO: can maybe retry zookeeper connection, but if the broker's zk
+		// path isn't setup right correctly the broker should die
 		public void process(WatchedEvent we) {
 			if (we.getState() == Event.KeeperState.SyncConnected) {
 				try {
-					String brokerPath = ROOTPATH   + "/" + getBrokerNodeID();
-					String alivePath  = brokerPath + "/" + ALIVE;
+					BrokerWatcher bw = new BrokerWatcher(zk, getBrokerNodeID());
+					// check/watch broker flag for update
+					bw.tryUpdate();
 
-					Stat bidStat = zk.exists(brokerPath, false);
-					if (bidStat != null) {
-						Stat aliveStat = zk.exists(alivePath, false);
-						if (aliveStat == null) {
-							// cleanup old broker data
-							List<String> children = zk.getChildren(brokerPath, false);
-							for (String child : children) {
-								String childpath = brokerPath + "/" + child;
-								Stat childstat = zk.exists(childpath, false);
-								zk.delete(childpath, bidStat.getVersion());
-							}
-							zk.delete(brokerPath, bidStat.getVersion());
-						} else {
-							// uri binding should fail and crash before this...
-							brokerCoreLogger.error("broker " + brokerPath + " is still alive...");
-							System.exit(1);
-						}
-					}
-
-					zk.create(brokerPath, getBrokerURI().getBytes(),
-							ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-					zk.create(alivePath, null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-
-					BidWatcher bidWatcher = new BidWatcher(zk);
-					List<String> children = zk.getChildren(brokerPath, bidWatcher);
-					// try handling regardless to avoid zookeeper not triggering update
-					bidWatcher.handleChildrenChange(brokerPath);
-				} catch (Exception e) {
-					brokerCoreLogger.error("watcher failed: ", e);
-					// TODO: can maybe retry zookeeper connection, but if the broker's zk
-					// path isn't setup right correctly the broker should die
+				} catch (KeeperException e) {
+					brokerCoreLogger.error("zkconnect creating brokerwatcher - path = " + e.getPath() +
+							" code = " + e.getCode() + " e: ", e);
+					System.exit(1);
+				} catch (InterruptedException e) {
+					brokerCoreLogger.error("zkconnect creating brokerwatcher - e = ", e);
 					System.exit(1);
 				}
 			} else {
@@ -298,53 +272,152 @@ public class BrokerCore {
 		}
 	}
 
-	protected class BidWatcher implements Watcher {
-		ZooKeeper zk;
+	protected class BrokerWatcher implements Watcher {
+		// this is duplicated in DaemonProcess should consolidate...
+		private static final String ROOT_PATH = "/padres";
+		private static final String GLOBAL_FLAG = "global_flag";
+		private static final String GLOBAL_FLAG_PATH = ROOT_PATH + "/" + GLOBAL_FLAG;
+		private static final String ALIVE = "alive";
+		private static final String BROKER_FLAG = "broker_flag";
+		private String BROKER_PATH;
+		private String ALIVE_PATH;
+		private String BROKER_FLAG_PATH;
+		private ZooKeeper zk;
 
-		public BidWatcher(ZooKeeper zk) {
+		public BrokerWatcher(ZooKeeper zk, String brokerId) throws KeeperException, InterruptedException {
 			this.zk = zk;
+			BROKER_PATH      = ROOT_PATH   + "/" + brokerId;
+			ALIVE_PATH       = BROKER_PATH + "/" + ALIVE;
+			BROKER_FLAG_PATH = BROKER_PATH + "/" + BROKER_FLAG;
+
+			Stat bs = zk.exists(BROKER_PATH, false);
+			if (bs != null) {
+				Stat as = zk.exists(ALIVE_PATH, false);
+				if (as == null) {
+					// cleanup old broker data
+					ZKUtil.deleteRecursive(zk, BROKER_PATH);
+				} else {
+					// uri binding should fail and crash before this...
+					brokerCoreLogger.error("broker " + BROKER_PATH + " is still alive...");
+					System.exit(1);
+				}
+			}
+
+			zk.create(BROKER_PATH, getBrokerURI().getBytes(),
+					ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+			zk.create(ALIVE_PATH, null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+			zk.create(BROKER_FLAG_PATH, "0".getBytes(),
+					ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
 		}
 
 		public void process(WatchedEvent we) {
-			if (we.getType() == Event.EventType.NodeChildrenChanged) {
-				handleChildrenChange(we.getPath());
+			if (we.getType() == Event.EventType.NodeDataChanged) {
+				try {
+					String path = we.getPath();
+					if (path.equals(GLOBAL_FLAG_PATH))
+						resumeWork();
+					else if (path.equals(BROKER_FLAG_PATH))
+						doUpdate();
+					else
+						brokerCoreLogger.error("brokerwatcher unknown path = " + path);
+				} catch (KeeperException e) {
+					brokerCoreLogger.error("brokerwatcher trying update - path = " + e.getPath() +
+							" code = " + e.getCode() + " e: ", e);
+					System.exit(1);
+				} catch (InterruptedException e) {
+					brokerCoreLogger.error("brokerwatcher trying update - e = ", e);
+					System.exit(1);
+				}
 			} else {
-				brokerCoreLogger.error("BidWatcher unhandled event: " + we);
+				brokerCoreLogger.error("BrokerWatcher unhandled event: " + we);
 				// TODO: ideally defend against zookeeper going down somehow?
 			}
 		}
 
-		private void handleChildrenChange(String brokerPath) {
+		private void doUpdate() throws KeeperException, InterruptedException {
+			byte[] b = zk.getData(BROKER_FLAG_PATH, false, null);
+			if (new String(b).equals("0"))
+				return;
 
-			brokerCoreLogger.info("[david] HIHIHI adv b: " + getBrokerID() + " msg count: " + getAdvertisements().values().size());
+			brokerCoreLogger.info("[david] HIHIHI adv b: " + getBrokerID() + " msg count: "
+					+ getAdvertisements().values().size());
 			for (Map.Entry<String, AdvertisementMessage> e : getAdvertisements().entrySet()) {
-				brokerCoreLogger.info("[david] adv b: " + getBrokerID() + " | key: " + e.getKey() + " | msg: " + e.getValue() + " | lasthopid: " + e.getValue().getLastHopID().getDestinationType());
+				brokerCoreLogger.info("[david] adv b: " + getBrokerID() + " | key: " + e.getKey()
+						+ " | msg: " + e.getValue() + " | lasthopid: "
+						+ e.getValue().getLastHopID().getDestinationType());
 			}
-			brokerCoreLogger.info("[david] HIHIHI sub b: " + getBrokerID() + " msg count: " + getSubscriptions().values().size());
+			brokerCoreLogger.info("[david] HIHIHI sub b: " + getBrokerID() + " msg count: "
+					+ getSubscriptions().values().size());
 			for (Map.Entry<String, SubscriptionMessage> e : getSubscriptions().entrySet()) {
-				brokerCoreLogger.info("[david] sub b: " + getBrokerID() + " | key: " + e.getKey() + " | msg: " + e.getValue() + " | lasthopid: " + e.getValue().getLastHopID().getDestinationType());
+				brokerCoreLogger.info("[david] sub b: " + getBrokerID() + " | key: " + e.getKey()
+						+ " | msg: " + e.getValue() + " | lasthopid: "
+						+ e.getValue().getLastHopID().getDestinationType());
 			}
-			brokerCoreLogger.info("[david] HIHIHI rsub b: " + getBrokerID() + " msg count: " + router.getRoutedSubs().values().size());
+			brokerCoreLogger.info("[david] HIHIHI rsub b: " + getBrokerID() + " msg count: "
+					+ router.getRoutedSubs().values().size());
 			for (Map.Entry<String, Set<MessageDestination>> e : router.getRoutedSubs().entrySet()) {
-				brokerCoreLogger.info("[david] rsub b: " + getBrokerID() + " | key: " + e.getKey() + " | msg: " + e.getValue());
+				brokerCoreLogger.info("[david] rsub b: " + getBrokerID() + " | key: " + e.getKey()
+						+ " | msg: " + e.getValue());
 			}
 
-			try {
-				//TODO: phase 1: cleanup
-				//TODO: 	a. freeze message sending
-				//TODO: 	b. clear routes
-				//TODO: 	a. close existing broker queues
-				//TODO: phase 2: update
-				//TODO: 	a. connect to new brokers
-				//TODO: 	b. create new routes (resend adv + sub??)
-				//TODO: 	c. unfreeze message sending (resend inflight pubs??)
-				// OVERLAY-SHUTDOWN_REMOTEBROKER (OverlayManager.java:210)
 
-				sendUpdates(brokerPath);
+			// cleanup old routes
+			// cleanup old connections
+			// TODO FIXME !!!!
 
-			} catch (Exception e) {
-				brokerCoreLogger.error("handleChildrenChange failed: ", e);
+
+			// create new connections
+			List<String> neighbours = zk.getChildren(BROKER_PATH, false);
+			neighbours.remove(ALIVE);
+			neighbours.remove(BROKER_FLAG);
+			for (String neighbour : neighbours) {
+				String neighbourPath = BROKER_PATH + "/" + neighbour;
+				String neighborURI;
+				b = zk.getData(neighbourPath, false, null);
+				neighborURI = new String(b);
+
+				Publication p = MessageFactory.createEmptyPublication();
+				p.addPair("class", "BROKER_CONTROL");
+				p.addPair("brokerID", getBrokerID());
+				p.addPair("command", "OVERLAY-UPDATE");
+				p.addPair("broker", neighborURI);
+				PublicationMessage pm = new PublicationMessage(p, "initial_connect");
+				brokerCoreLogger.debug("Broker " + getBrokerID()
+						+ " is sending initial connection to broker " + neighborURI);
+				queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
 			}
+
+			// finished new connections -> update broker flag
+			Stat s = new Stat(); 
+			b = zk.getData(BROKER_FLAG_PATH, null, s);
+			assert(new String(b).equals("1"));
+			zk.setData(BROKER_FLAG_PATH, "0".getBytes(), s.getVersion());
+
+			// check/watch global flag for when all brokers are done
+			b = zk.getData(GLOBAL_FLAG_PATH, this, null);
+			if (new String(b).equals("0"))
+				resumeWork();
+		}
+
+		private void resumeWork() throws KeeperException, InterruptedException {
+			// it is possible to see global flag change to 1 in which case we should do nothing
+			// we only resume work when an update is finished not during
+			byte[] b = zk.getData(GLOBAL_FLAG_PATH, false, null);
+			if (new String(b).equals("1"))
+				return;
+
+			// resend adv/sub
+			// TODO FIXME !!!!
+
+			// check/watch broker flag for update
+			tryUpdate();
+		}
+
+		// check for new update or watch broker flag for next update
+		private void tryUpdate() throws KeeperException, InterruptedException {
+			byte[] b = zk.getData(BROKER_FLAG_PATH, this, null);
+			if (new String(b).equals("1"))
+				doUpdate();
 		}
 
 		private void reSendAdvSub () {
@@ -368,42 +441,6 @@ public class BrokerCore {
 					queueManager.enQueue(submsg.duplicate(), MessageDestination.INPUTQUEUE);
 				}
 			}
-		}
-
-		private void sendUpdates(String brokerPath) throws KeeperException, InterruptedException {
-			List<String> oldChildren;
-			List<String> children = zk.getChildren(brokerPath, this);
-			Collections.sort(children);
-			do {
-				for (String child : children) {
-					String childPath = brokerPath + "/" + child;
-					if (childPath.endsWith(ALIVE)) // skip its this broker's alive zknode
-						continue;
-					String neighborURI;
-					byte[] b = zk.getData(childPath, false, null);
-					neighborURI = new String(b);
-
-					Publication p = MessageFactory.createEmptyPublication();
-					p.addPair("class", "BROKER_CONTROL");
-					p.addPair("brokerID", getBrokerID());
-					p.addPair("command", "OVERLAY-UPDATE");
-					p.addPair("broker", neighborURI);
-					PublicationMessage pm = new PublicationMessage(p, "initial_connect");
-					brokerCoreLogger.debug("Broker " + getBrokerID()
-								+ " is sending initial connection to broker " + neighborURI);
-					queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
-				}
-				/*
-				 * - a watch was set on the initial getchildren, but it may be possible
-				 *   for an update to zk to have occured with no watch triggered
-				 * - checking again would detect an unseen change
-				 * - additional set watchers are from the same object so process will only
-				 *   be triggered once on new updates
-				 */
-				oldChildren = new ArrayList<String>(children);
-				children = zk.getChildren(brokerPath, this);
-				Collections.sort(children);
-			} while (!oldChildren.equals(children));
 		}
 	}
 
@@ -630,28 +667,6 @@ public class BrokerCore {
 		if (brokerConfig.isWebInterface()) {
 			ManagementServer managementServer = new ManagementServer(this);
 			managementServer.start();
-		}
-	}
-
-	protected void initNeighborConnections() {
-		// connect to initial remote brokers from configuration
-		if (brokerConfig.getNeighborURIs().length == 0) {
-			brokerCoreLogger.warn("Missing remoteBrokers key or remoteBrokers value in the property file.");
-			exceptionLogger.warn("Here is an exception : ", new Exception(
-					"Missing remoteBrokers key or remoteBrokers value in the property file."));
-		}
-		for (String neighborURI : brokerConfig.getNeighborURIs()) {
-			// send OVERLAY-CONNECT(s) to controller
-			Publication p = MessageFactory.createEmptyPublication();
-			p.addPair("class", "BROKER_CONTROL");
-			p.addPair("brokerID", getBrokerID());
-			p.addPair("command", "OVERLAY-CONNECT");
-			p.addPair("broker", neighborURI);
-			PublicationMessage pm = new PublicationMessage(p, "initial_connect");
-			if (brokerCoreLogger.isDebugEnabled())
-				brokerCoreLogger.debug("Broker " + getBrokerID()
-						+ " is sending initial connection to broker " + neighborURI);
-			queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
 		}
 	}
 
