@@ -54,6 +54,8 @@ import ca.utoronto.msrg.padres.broker.router.RouterFactory;
 import ca.utoronto.msrg.padres.broker.router.matching.MatcherException;
 import ca.utoronto.msrg.padres.broker.webmonitor.monitor.WebUIMonitorToBeRemoved;
 import ca.utoronto.msrg.padres.common.message.AdvertisementMessage;
+import ca.utoronto.msrg.padres.common.message.Unadvertisement;
+import ca.utoronto.msrg.padres.common.message.UnadvertisementMessage;
 import ca.utoronto.msrg.padres.common.message.Message;
 import ca.utoronto.msrg.padres.common.message.MessageDestination;
 import ca.utoronto.msrg.padres.common.message.MessageDestination.DestinationType;
@@ -62,6 +64,8 @@ import ca.utoronto.msrg.padres.common.message.parser.ParseException;
 import ca.utoronto.msrg.padres.common.message.Publication;
 import ca.utoronto.msrg.padres.common.message.PublicationMessage;
 import ca.utoronto.msrg.padres.common.message.SubscriptionMessage;
+import ca.utoronto.msrg.padres.common.message.Unsubscription;
+import ca.utoronto.msrg.padres.common.message.UnsubscriptionMessage;
 import ca.utoronto.msrg.padres.common.util.CommandLine;
 import ca.utoronto.msrg.padres.common.util.LogException;
 import ca.utoronto.msrg.padres.common.util.LogSetup;
@@ -374,7 +378,7 @@ public class BrokerCore {
 				PublicationMessage pm = new PublicationMessage(p, "initial_connect");
 				brokerCoreLogger.debug("Broker " + getBrokerID()
 						+ " is sending initial connection to broker " + neighborURI);
-				queueManager.enQueue(pm, MessageDestination.INPUTQUEUE);
+				routeMessage(pm, MessageDestination.INPUTQUEUE);
 			}
 
 			// finished new connections -> update broker flag
@@ -398,7 +402,7 @@ public class BrokerCore {
 			if (new String(b).equals("1"))
 				return;
 
-			reSendAdvSub();
+			//reSendAdvSub();
 
 			// check/watch broker flag for update
 			tryUpdate();
@@ -413,6 +417,14 @@ public class BrokerCore {
 
 		// TODO: clean up old connections + missing message types + possibly other unknown things
 		private void saveAndCleanState() {
+			OverlayRoutingTable ort = getOverlayManager().getORT();
+			Map<MessageDestination, OutputQueue> neighbors = ort.getBrokerQueues();
+			synchronized (neighbors) {
+				for (MessageDestination neighbour : neighbors.keySet()) {
+					ort.removeBroker(neighbour);
+					removeQueue(neighbour);
+				}
+			}
 			savedAdvs.clear();
 			savedSubs.clear();
 
@@ -423,8 +435,8 @@ public class BrokerCore {
 			brokerCoreLogger.debug("b = " + getBrokerID() + " workingSubs = " + getSubscriptions());
 			brokerCoreLogger.debug("b = " + getBrokerID() + " savedSubs = " + savedSubs);
 
-			saveAndCleanRoutedSubs();
-			brokerCoreLogger.debug("b = " + getBrokerID() + " routedSubs = " + router.getRoutedSubs());
+			//saveAndCleanRoutedSubs();
+			//brokerCoreLogger.debug("b = " + getBrokerID() + " routedSubs = " + router.getRoutedSubs());
 		}
 
 		// TODO: switch to .forEachValue for concurrency?
@@ -446,7 +458,11 @@ public class BrokerCore {
 				} else if (!msgId.startsWith(getBrokerID()) ||
 						!EXCLUDE_CLASSES.contains(msg.getAdvertisement().getClassVal())) {
 					brokerCoreLogger.debug("b = " + getBrokerID() + " removing adv = " + e);
-					iter.remove();
+					//iter.remove();
+
+					Unadvertisement unadv = new Unadvertisement(msg.getAdvertisement().getAdvID());
+					Message unadvmsg = new UnadvertisementMessage(unadv, getNewMessageID());
+					routeMessage(unadvmsg, MessageDestination.INPUTQUEUE);
 				}
 			}
 		}
@@ -469,7 +485,11 @@ public class BrokerCore {
 				} else if (!msgId.startsWith(getBrokerID()) ||
 						!EXCLUDE_CLASSES.contains(msg.getSubscription().getClassVal())) {
 					brokerCoreLogger.debug("b = " + getBrokerID() + " removing sub = " + e);
-					iter.remove();
+					//iter.remove();
+
+					Unsubscription unsub = new Unsubscription(msg.getSubscription().getSubscriptionID());
+					Message unsubmsg = new UnsubscriptionMessage(unsub, getNewMessageID());
+					routeMessage(unsubmsg, MessageDestination.INPUTQUEUE);
 				}
 			}
 		}
