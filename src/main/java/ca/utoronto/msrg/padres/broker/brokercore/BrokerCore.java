@@ -262,11 +262,11 @@ public class BrokerCore {
 				try {
 					BrokerWatcher bw = new BrokerWatcher(zk, getBrokerNodeID());
 					// check/watch broker flag for update
-					bw.tryUpdate();
+					bw.tryGlobalStateChange();
 
 				} catch (KeeperException e) {
 					brokerCoreLogger.error("zkconnect creating brokerwatcher - path = " + e.getPath() +
-							" code = " + e.getCode() + " e: ", e);
+							" code = " + e.code() + " e: ", e);
 					System.exit(1);
 				} catch (InterruptedException e) {
 					brokerCoreLogger.error("zkconnect creating brokerwatcher - e = ", e);
@@ -300,6 +300,9 @@ public class BrokerCore {
 		private Map<String, AdvertisementMessage> savedAdvs;
 		private Map<String, SubscriptionMessage> savedSubs;
 
+		// should be enum... 0 = not updating, 1 = updating
+		private int globalState = 0;
+
 		public BrokerWatcher(ZooKeeper zk, String brokerId) throws KeeperException, InterruptedException {
 			this.zk = zk;
 			BROKER_PATH      = ROOT_PATH   + "/" + brokerId;
@@ -329,18 +332,20 @@ public class BrokerCore {
 		}
 
 		public void process(WatchedEvent we) {
+			String path = we.getPath();
+			brokerCoreLogger.info("b = " + getBrokerID() + " processing event: path: " +
+					path + ", type: " + we.getType());
 			if (we.getType() == Event.EventType.NodeDataChanged) {
 				try {
-					String path = we.getPath();
 					if (path.equals(GLOBAL_FLAG_PATH))
-						resumeWork();
+						tryGlobalStateChange();
 					else if (path.equals(BROKER_FLAG_PATH))
-						doUpdate();
+						doConnect();
 					else
 						brokerCoreLogger.error("brokerwatcher unknown path = " + path);
 				} catch (KeeperException e) {
-					brokerCoreLogger.error("brokerwatcher trying update - path = " + e.getPath() +
-							" code = " + e.getCode() + " e: ", e);
+					brokerCoreLogger.error("brokerwatcher trying update - path = " + path +
+							" code = " + e.code() + " e: ", e);
 					System.exit(1);
 				} catch (InterruptedException e) {
 					brokerCoreLogger.error("brokerwatcher trying update - e = ", e);
@@ -352,91 +357,127 @@ public class BrokerCore {
 			}
 		}
 
-		private void doUpdate() throws KeeperException, InterruptedException {
+		private void doConnect() throws KeeperException, InterruptedException {
 			long t0 = System.nanoTime();
 			byte[] b = zk.getData(BROKER_FLAG_PATH, false, null);
-			if (new String(b).equals("0"))
+			if (!(new String(b).equals("2")))
 				return;
 
-			saveAndCleanState();
-
 			// create new connections
-			List<String> neighbours = zk.getChildren(BROKER_PATH, false);
-			neighbours.remove(ALIVE);
-			neighbours.remove(BROKER_FLAG);
-			for (String neighbour : neighbours) {
+			HashSet<String> newNeighbourURIs = new HashSet<String>();
+			List<String> newNeighbours = zk.getChildren(BROKER_PATH, false);
+			newNeighbours.remove(ALIVE);
+			newNeighbours.remove(BROKER_FLAG);
+			for (String neighbour : newNeighbours) {
 				String neighbourPath = BROKER_PATH + "/" + neighbour;
-				String neighborURI;
+				String neighbourURI;
 				b = zk.getData(neighbourPath, false, null);
-				neighborURI = new String(b);
+				neighbourURI = new String(b);
+				newNeighbourURIs.add(neighbourURI);
 
 				Publication p = MessageFactory.createEmptyPublication();
 				p.addPair("class", "BROKER_CONTROL");
 				p.addPair("brokerID", getBrokerID());
 				p.addPair("command", "OVERLAY-UPDATE");
-				p.addPair("broker", neighborURI);
+				p.addPair("broker", neighbourURI);
 				PublicationMessage pm = new PublicationMessage(p, "initial_connect");
 				brokerCoreLogger.debug("Broker " + getBrokerID()
-						+ " is sending initial connection to broker " + neighborURI);
+						+ " is sending initial connection to broker " + neighbourURI);
 				routeMessage(pm, MessageDestination.INPUTQUEUE);
+			}
+			
+			HashSet<String> curNeighbourURIs = new HashSet<String>();
+			Map<MessageDestination, OutputQueue> neighbours = getOverlayManager().getORT().getBrokerQueues();
+			synchronized (neighbours) {
+				for (MessageDestination neighbour : neighbours.keySet())
+					curNeighbourURIs.add(neighbour.getDestinationID());
+			}
+			int retry = 0;
+			while (!curNeighbourURIs.containsAll(newNeighbourURIs) && retry < 5) {
+				Thread.sleep(200);
+				retry++;
 			}
 
 			// finished new connections -> update broker flag
 			Stat s = new Stat(); 
 			b = zk.getData(BROKER_FLAG_PATH, null, s);
-			assert(new String(b).equals("1"));
+			assert(new String(b).equals("2"));
+			brokerCoreLogger.debug("b = " + getBrokerID() + " setting update flag 2 -> 0");
 			zk.setData(BROKER_FLAG_PATH, "0".getBytes(), s.getVersion());
 
-			// check/watch global flag for when all brokers are done
-			b = zk.getData(GLOBAL_FLAG_PATH, this, null);
-			if (new String(b).equals("0"))
-				resumeWork();
 			long t1 = System.nanoTime();
-			brokerCoreLogger.info("doUpdate = " + (t1 - t0) + "ns");
+			brokerCoreLogger.info("b = " + getBrokerID() + " doConnect took = " + (t1 - t0) + "ns");
+
+			// check/watch global flag for when all brokers are done
+			tryGlobalStateChange();
+		}
+
+		private void tryGlobalStateChange() throws KeeperException, InterruptedException {
+			byte[] b = zk.getData(GLOBAL_FLAG_PATH, this, null);
+			String newState = new String(b);
+			if (globalState == 0 && newState.equals("1")) {
+				brokerCoreLogger.info("b = " + getBrokerID() + " tryGlobalStateChange changing from 0 to 1");
+				globalState = 1;
+				cleanState();
+			} else if (globalState == 1 && newState.equals("0")) {
+				brokerCoreLogger.info("tryGlobalStateChange changing from 1 to 0");
+				globalState = 0;
+				resumeWork();
+			}
+			/* no reason to log this as it happens expectedly
+			else {
+				brokerCoreLogger.warn("tryGlobalStateChange bad = " +
+						globalState + " newstate = " + newState);
+			}
+			*/
 		}
 
 		private void resumeWork() throws KeeperException, InterruptedException {
-			// it is possible to see global flag change to 1 in which case we should do nothing
-			// we only resume work when an update is finished not during
-			byte[] b = zk.getData(GLOBAL_FLAG_PATH, false, null);
-			if (new String(b).equals("1"))
-				return;
-
-			//reSendAdvSub();
+			reSendAdvSub();
 
 			// check/watch broker flag for update
-			tryUpdate();
-		}
-
-		// check for new update or watch broker flag for next update
-		private void tryUpdate() throws KeeperException, InterruptedException {
-			byte[] b = zk.getData(BROKER_FLAG_PATH, this, null);
-			if (new String(b).equals("1"))
-				doUpdate();
+			tryGlobalStateChange();
 		}
 
 		// TODO: clean up old connections + missing message types + possibly other unknown things
-		private void saveAndCleanState() {
-			OverlayRoutingTable ort = getOverlayManager().getORT();
-			Map<MessageDestination, OutputQueue> neighbors = ort.getBrokerQueues();
-			synchronized (neighbors) {
-				for (MessageDestination neighbour : neighbors.keySet()) {
-					ort.removeBroker(neighbour);
-					removeQueue(neighbour);
-				}
-			}
+		private void cleanState() throws KeeperException, InterruptedException {
+			long t0 = System.nanoTime();
+			brokerCoreLogger.debug("b = " + getBrokerID() + " cleaning state");
+			// remove neighbour queues
+			//OverlayRoutingTable ort = getOverlayManager().getORT();
+			//Map<MessageDestination, OutputQueue> neighbours = ort.getBrokerQueues();
+			//for (MessageDestination neighbour : neighbours.keySet()) {
+			//    brokerCoreLogger.debug("b = " + getBrokerID() + " removing neighbour = " + neighbour);
+			//    ort.removeBroker(neighbour);
+			//    removeQueue(neighbour);
+			//}
+			//brokerCoreLogger.debug("b = " + getBrokerID() + " done removing neighbour");
+
 			savedAdvs.clear();
 			savedSubs.clear();
-
+			//brokerCoreLogger.debug("b = " + getBrokerID() + " workingAdvs = " + getAdvertisements());
 			saveAndCleanAdvs();
-			brokerCoreLogger.debug("b = " + getBrokerID() + " workingAdvs = " + getAdvertisements());
-			brokerCoreLogger.debug("b = " + getBrokerID() + " savedAdvs = " + savedAdvs);
+			//brokerCoreLogger.debug("b = " + getBrokerID() + " savedAdvs = " + savedAdvs);
+			//brokerCoreLogger.debug("b = " + getBrokerID() + " workingSubs = " + getSubscriptions());
 			saveAndCleanSubs();
-			brokerCoreLogger.debug("b = " + getBrokerID() + " workingSubs = " + getSubscriptions());
-			brokerCoreLogger.debug("b = " + getBrokerID() + " savedSubs = " + savedSubs);
-
+			//brokerCoreLogger.debug("b = " + getBrokerID() + " savedSubs = " + savedSubs);
 			//saveAndCleanRoutedSubs();
 			//brokerCoreLogger.debug("b = " + getBrokerID() + " routedSubs = " + router.getRoutedSubs());
+
+			// finished cleaning -> update broker flag
+			Stat s = new Stat(); 
+			byte[] b = zk.getData(BROKER_FLAG_PATH, null, s);
+			assert(new String(b).equals("0"));
+			brokerCoreLogger.debug("b = " + getBrokerID() + " setting update flag 0 -> 1");
+			zk.setData(BROKER_FLAG_PATH, "1".getBytes(), s.getVersion());
+
+			long t1 = System.nanoTime();
+			brokerCoreLogger.info("b = " + getBrokerID() + " cleanState took = " + (t1 - t0) + "ns");
+
+			// check/watch broker flag for when all brokers are done cleaning (to start connecting)
+			b = zk.getData(BROKER_FLAG_PATH, this, null);
+			if (new String(b).equals("2"))
+				doConnect();
 		}
 
 		// TODO: switch to .forEachValue for concurrency?
@@ -453,17 +494,36 @@ public class BrokerCore {
 				// if it is anything else (routing + connection) remove
 				// note: just checking for destination type internal works for subs, but not advs
 				//if (dstType.contains(DestinationType.INTERNAL))
+
+				//brokerCoreLogger.debug("b = " + getBrokerID() + " WTFFADV msg = " + msg + " msgID = "
+				//        + msgId + " dstType = " + dstType + " avdid = "
+				//        + msg.getAdvertisement().getAdvID());
+
 				if (dstType.contains(DestinationType.CLIENT)) {
+					brokerCoreLogger.debug("b = " + getBrokerID() + " WTFFADV msg = " + msg + " msgID = "
+							+ msgId + " dstType = " + dstType + " avdid = "
+							+ msg.getAdvertisement().getAdvID());
 					savedAdvs.put(msg.getMessageID(), msg);
+					Unadvertisement unadv = new Unadvertisement(msg.getMessageID());
+					UnadvertisementMessage unadvmsg = new UnadvertisementMessage(unadv, getNewMessageID());
+					brokerCoreLogger.debug("b = " + getBrokerID() + " sending unadv = " + unadvmsg +
+							" advid = " + unadvmsg.getUnadvertisement().getAdvID());
+					routeMessage(unadvmsg, MessageDestination.INPUTQUEUE);
+
 				} else if (!msgId.startsWith(getBrokerID()) ||
 						!EXCLUDE_CLASSES.contains(msg.getAdvertisement().getClassVal())) {
-					brokerCoreLogger.debug("b = " + getBrokerID() + " removing adv = " + e);
-					//iter.remove();
 
-					Unadvertisement unadv = new Unadvertisement(msg.getAdvertisement().getAdvID());
-					Message unadvmsg = new UnadvertisementMessage(unadv, getNewMessageID());
+					Unadvertisement unadv = new Unadvertisement(msg.getMessageID());
+					UnadvertisementMessage unadvmsg = new UnadvertisementMessage(unadv, getNewMessageID());
+					brokerCoreLogger.debug("b = " + getBrokerID() + " sending unadv = " + unadvmsg +
+							" advid = " + unadvmsg.getUnadvertisement().getAdvID());
 					routeMessage(unadvmsg, MessageDestination.INPUTQUEUE);
 				}
+				//else if (!EXCLUDE_CLASSES.contains(msg.getAdvertisement().getClassVal())) {
+				//    iter.remove();
+				//    brokerCoreLogger.debug("b = " + getBrokerID() + " removing adv = " + msg +
+				//            " advid = " + msg.getAdvertisement().getAdvID());
+				//}
 			}
 		}
 
@@ -480,17 +540,37 @@ public class BrokerCore {
 				// if it is anything else (routing + connection) remove
 				// note: just checking for destination type internal works for subs, but not advs
 				//if (dstType.contains(DestinationType.INTERNAL))
+
+				//brokerCoreLogger.debug("b = " + getBrokerID() + " WTFFSUB msg = " + msg + " msgID = "
+				//        + msgId + " dstType = " + dstType + " subid = "
+				//        + msg.getSubscription().getSubscriptionID());
+
 				if (dstType.contains(DestinationType.CLIENT)) {
+					brokerCoreLogger.debug("b = " + getBrokerID() + " WTFFSUB msg = " + msg + " msgID = "
+							+ msgId + " dstType = " + dstType + " subid = "
+							+ msg.getSubscription().getSubscriptionID());
 					savedSubs.put(msg.getMessageID(), msg);
+
+					Unsubscription unsub = new Unsubscription(msg.getMessageID());
+					UnsubscriptionMessage unsubmsg = new UnsubscriptionMessage(unsub, getNewMessageID());
+					brokerCoreLogger.debug("b = " + getBrokerID() + " sending unsub = " + unsubmsg +
+							" subid = " + unsubmsg.getUnsubscription().getSubID());
+					routeMessage(unsubmsg, MessageDestination.INPUTQUEUE);
+
 				} else if (!msgId.startsWith(getBrokerID()) ||
 						!EXCLUDE_CLASSES.contains(msg.getSubscription().getClassVal())) {
-					brokerCoreLogger.debug("b = " + getBrokerID() + " removing sub = " + e);
-					//iter.remove();
 
-					Unsubscription unsub = new Unsubscription(msg.getSubscription().getSubscriptionID());
-					Message unsubmsg = new UnsubscriptionMessage(unsub, getNewMessageID());
+					Unsubscription unsub = new Unsubscription(msg.getMessageID());
+					UnsubscriptionMessage unsubmsg = new UnsubscriptionMessage(unsub, getNewMessageID());
+					brokerCoreLogger.debug("b = " + getBrokerID() + " sending unsub = " + unsubmsg +
+							" subid = " + unsubmsg.getUnsubscription().getSubID());
 					routeMessage(unsubmsg, MessageDestination.INPUTQUEUE);
 				}
+				//else if (!EXCLUDE_CLASSES.contains(msg.getSubscription().getClassVal())) {
+				//    iter.remove();
+				//    brokerCoreLogger.debug("b = " + getBrokerID() + " removing sub = " + msg +
+				//            " subid = " + msg.getSubscription().getSubscriptionID());
+				//}
 			}
 		}
 
@@ -515,11 +595,13 @@ public class BrokerCore {
 
 		private void reSendAdvSub() {
 			for (AdvertisementMessage advmsg : savedAdvs.values()) {
-				queueManager.enQueue(advmsg.duplicate(), MessageDestination.INPUTQUEUE);
+				brokerCoreLogger.debug("b = " + getBrokerID() + " resending adv = " + advmsg);
+				routeMessage(advmsg.duplicate(), MessageDestination.INPUTQUEUE);
 			}
 
 			for (SubscriptionMessage submsg : savedSubs.values()) {
-				queueManager.enQueue(submsg.duplicate(), MessageDestination.INPUTQUEUE);
+				brokerCoreLogger.debug("b = " + getBrokerID() + " resending sub = " + submsg);
+				routeMessage(submsg.duplicate(), MessageDestination.INPUTQUEUE);
 			}
 		}
 	}

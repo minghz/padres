@@ -11,9 +11,9 @@ import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Map.Entry;
 import java.util.AbstractMap.SimpleEntry;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
@@ -81,7 +81,7 @@ public class DaemonProcess implements Runnable {
 						dw.doUpdate(newBrokerSet);
 				} catch (KeeperException e) {
 					daemonLogger.error("zkconnect trying update - path = " + e.getPath() +
-							" code = " + e.getCode() + " e: ", e);
+							" code = " + e.code() + " e: ", e);
 					System.exit(1);
 				} catch (InterruptedException e) {
 					daemonLogger.error("zkconnect trying update - e = ", e);
@@ -95,11 +95,14 @@ public class DaemonProcess implements Runnable {
 	}
 
 	private class DaemonWatcher implements Watcher {
-		private AtomicInteger brokerUpdateBarrier = new AtomicInteger();
+		private HashMap<String, Boolean> brokerUpdateBarrier = new HashMap<String, Boolean>();
+		// 0 = waiting, 1 = all brokers done cleaning, 2 = start connecting
+		private int brokerState = 0;
 		private Set<Entry<String, String>> brokerSet = new HashSet<Entry<String, String>>();
 
 		public void process(WatchedEvent event) {
 			boolean tryUpdate = false;
+			boolean doBrokerStateChange = false;
 			String path = event.getPath();
 			daemonLogger.info("processing event: path: " + path + ", type: " + event.getType());
 
@@ -108,31 +111,34 @@ public class DaemonProcess implements Runnable {
 				tryUpdate = true;
 
 			} else if (event.getType() == Event.EventType.NodeDeleted) {
-				assert(path.endsWith(ALIVE));
-				tryUpdate = true;
-
+				if (path.endsWith(ALIVE)) {
+					tryUpdate = true;
+				} else if (path.endsWith(BROKER_FLAG)) {
+					// if this happens the entire update is ruined and should
+					// just be restarted for simplicity we will just continue
+					// to the end and catch the change with getLiveBrokers
+					doBrokerStateChange = true;
+				} else {
+					daemonLogger.error("daemonwatcher unknown delete path = " + path);
+					System.exit(1);
+				}
 			} else if (event.getType() == Event.EventType.NodeDataChanged) {
 				assert(path.endsWith(BROKER_FLAG));
-				int brokersUpdating = brokerUpdateBarrier.decrementAndGet();
-				if (brokersUpdating == 0) {
-					String old = setZKNode(GLOBAL_FLAG_PATH, "0", null);
-					assert(old.equals("1"));
-					tryUpdate = true;
-				}
+				doBrokerStateChange = true;
+			} else {
+				daemonLogger.warn("daemonwatcher unprocessed event = " + event + " on path = " + path);
 			}
 
 			try {
-				long t0 = System.nanoTime();
+				if (doBrokerStateChange)
+					tryUpdate = tryBrokerStateChange(true, path);
 
 				Set<Entry<String, String>> newBrokerSet = getLiveBrokers();
 				if (tryUpdate && newBrokerSet != null)
 					doUpdate(newBrokerSet);
-
-				long t1 = System.nanoTime();
-				daemonLogger.info("doUpdate took = " + (t1 - t0) + "ns");
 			} catch (KeeperException e) {
 				daemonLogger.error("daemonwatcher trying update - path = " + e.getPath() +
-						" code = " + e.getCode() + " e: ", e);
+						" code = " + e.code() + " e: ", e);
 				System.exit(1);
 			} catch (InterruptedException e) {
 				daemonLogger.error("daemonwatcher trying update - e = ", e);
@@ -140,9 +146,86 @@ public class DaemonProcess implements Runnable {
 			}
 		}
 
+		private boolean tryBrokerStateChange(boolean decrement, String path)
+			throws KeeperException, InterruptedException {
+			long t0 = System.nanoTime();
+			boolean tryUpdate = false;
+
+			if (decrement) {
+				String newState = "-1";
+				try {
+					byte[] b = zk.getData(path, this, null);
+					newState = new String(b);
+				} catch (KeeperException e) {
+					if (e.code() == KeeperException.Code.NONODE) {
+						daemonLogger.warn("trybrokerstatechange broker kia = ", e);
+						brokerUpdateBarrier.put(path, false);
+					} else {
+						throw e;
+					}
+				}
+
+				if (brokerState == 1 && newState.equals("1")) {
+					brokerUpdateBarrier.put(path, false);
+				} else if (brokerState == 2 && newState.equals("0")) {
+					brokerUpdateBarrier.put(path, false);
+				} else {
+					// this might not be that weird not sure
+					daemonLogger.warn("trybrokerstatechange weirdness brokerState = " + brokerState
+							+ " newState = " + newState + " brokerUpdateBarrier = " + brokerUpdateBarrier);
+				}
+			}
+
+			if (brokerState == 1 && checkBrokerUpdateBarrier()) {
+				daemonLogger.info("tryBrokerStateChange changing from 1 to 2");
+				brokerState = 2;
+				brokerUpdateBarrier.clear();
+				// set broker flags to 2
+				for (Node broker : MG.graph.getEachNode()) {
+					String brokerFlagPath = ROOT_PATH + "/" + broker.getId() + "/" + BROKER_FLAG;
+					brokerUpdateBarrier.put(brokerFlagPath, true);
+
+					// watch broker update flag
+					try {
+						String old = setZKNode(brokerFlagPath, "2");
+						assert(old.equals("1"));
+						daemonLogger.debug("watching broker update flag 2 -> 0 for " + brokerFlagPath);
+						byte []b = zk.getData(brokerFlagPath, this, null);
+						if (new String(b).equals("0"))
+							brokerUpdateBarrier.put(brokerFlagPath, false);
+						// since we watch before we set it should not be
+						// possible for a broker to finish connecting without
+						// us getting a watch update
+					} catch (KeeperException e) {
+						if (e.code() == KeeperException.Code.NONODE) {
+							daemonLogger.warn("trybrokerstatechange broker kia = ", e);
+							brokerUpdateBarrier.put(brokerFlagPath, false);
+						} else {
+							throw e;
+						}
+					}
+				}
+			}
+			// don't do else if as we could have quickly finished state 2 above
+			if (brokerState == 2 && checkBrokerUpdateBarrier()) {
+				daemonLogger.info("tryBrokerStateChange changing from 2 to 0");
+				brokerState = 0;
+				brokerUpdateBarrier.clear();
+				// set global flag to 0
+				String old = setZKNode(GLOBAL_FLAG_PATH, "0");
+				assert(old.equals("1"));
+				tryUpdate = true;
+			}
+
+			long t1 = System.nanoTime();
+			daemonLogger.info("tryBrokerStateChange took = " + (t1 - t0) + "ns");
+			return tryUpdate;
+		}
+
 		// true if brokers changed false if no change
 		// also sets watches on /padres children path and broker alive nodes
 		private Set<Entry<String, String>> getLiveBrokers() throws KeeperException, InterruptedException {
+			long t0 = System.nanoTime();
 			List<String> brokerList = zk.getChildren(ROOT_PATH, this);
 			brokerList.remove(GLOBAL_FLAG);
 			Set<Entry<String, String>> newBrokerSet = new HashSet<Entry<String, String>>();
@@ -158,6 +241,7 @@ public class DaemonProcess implements Runnable {
 				// must retry as there is a possible (but very unlikely) race
 				// where the broker is created, but its alive and flag nodes
 				// are still being made
+				// turns out the right way to do this is check + wait for node created event on the paths
 				int retry = 0;
 				while ((as == null || bs == null) && retry < 5) {
 					Thread.sleep(200);
@@ -184,11 +268,17 @@ public class DaemonProcess implements Runnable {
 
 			daemonLogger.debug("current live brokers = " + brokerSet);
 			daemonLogger.info("getLiveBrokers result = " + result);
+			long t1 = System.nanoTime();
+			daemonLogger.info("getLiveBrokers took = " + (t1 - t0) + "ns");
 			return result;
 		}
 
-		private void doUpdate(Set<Entry<String, String>> newBrokerSet) throws KeeperException, InterruptedException {
-			String old = setZKNode(GLOBAL_FLAG_PATH, "1", null);
+		private void doUpdate(Set<Entry<String, String>> newBrokerSet)
+			throws KeeperException, InterruptedException {
+			long t0 = System.nanoTime();
+
+			daemonLogger.debug("starting update setting global flag to 1");
+			String old = setZKNode(GLOBAL_FLAG_PATH, "1");
 			if (old.equals("1")) {
 				daemonLogger.info("tried to update, but one is currently in progress");
 				return;
@@ -196,14 +286,14 @@ public class DaemonProcess implements Runnable {
 
 			brokerSet = new HashSet<Entry<String, String>>(newBrokerSet);
 
+			assert(brokerState == 0);
+			daemonLogger.debug("doUpdate brokerState changing from 0 to 1");
+			brokerState = 1;
+
 			MainGraph newMG = new MainGraph(MG.max_hop);
 			for (Entry<String, String> broker : brokerSet)
 				newMG.addNode(broker.getKey(), broker.getValue());
 			MG = newMG;
-
-			// update barrier all at once before setting watchers to avoid weird races
-			assert(brokerUpdateBarrier.get() == 0);
-			brokerUpdateBarrier.set(brokerSet.size());
 
 			for (Node broker : MG.graph.getEachNode()) {
 				String brokerPath = ROOT_PATH + "/" + broker.getId();
@@ -228,31 +318,50 @@ public class DaemonProcess implements Runnable {
 					initZKNode(neighbourPath, neighbourUri);
 				}
 
-				// set broker update flag
-				old = setZKNode(brokerPath + "/" + BROKER_FLAG, "1", this);
-				assert(old.equals("0"));
+				String brokerFlagPath = brokerPath + "/" + BROKER_FLAG; 
+				// watch broker update flag
+				try {
+					brokerUpdateBarrier.put(brokerFlagPath, true);
+					daemonLogger.debug("watching broker update flag 0 -> 1 for " + brokerFlagPath);
+					byte[] b = zk.getData(brokerFlagPath, this, null);
+					// check if broker already finished cleaning
+					String brokerFlag = new String(b);
+					if (brokerFlag.equals("1"))
+						brokerUpdateBarrier.put(brokerFlagPath, false);
+				} catch (KeeperException e) {
+					if (e.code() == KeeperException.Code.NONODE)
+						brokerUpdateBarrier.put(brokerFlagPath, false);
+					else
+						throw e;
+				}
 			}
 
+			tryBrokerStateChange(false, null);
+
 			daemonLogger.info("doUpdate finished current brokers = " + brokerSet);
+			long t1 = System.nanoTime();
+			daemonLogger.info("doUpdate took = " + (t1 - t0) + "ns");
+		}
+		private boolean checkBrokerUpdateBarrier() {
+			boolean done = true;
+			for (Boolean waitingOnBroker : brokerUpdateBarrier.values()) {
+				if (waitingOnBroker) {
+					done = false;
+					break;
+				}
+			}
+			return done;
 		}
 	}
 
 	// returns previous value
-	private String setZKNode(String path, String data, Watcher watch) {
+	private String setZKNode(String path, String data)
+		throws KeeperException, InterruptedException {
 		String str = "";
-		try {
-			Stat s = new Stat(); 
-			byte[] b = zk.getData(path, watch, s);
-			str = new String(b);
-			zk.setData(path, data.getBytes(), s.getVersion());
-		} catch (KeeperException e) {
-			daemonLogger.error("setZKNode - path = " + e.getPath() +
-					" code = " + e.getCode() + " e: ", e);
-			System.exit(1);
-		} catch (InterruptedException e) {
-			daemonLogger.error("setZKNode - e = ", e);
-			System.exit(1);
-		}
+		Stat s = new Stat(); 
+		byte[] b = zk.getData(path, false, s);
+		str = new String(b);
+		zk.setData(path, data.getBytes(), s.getVersion());
 		return str;
 	}
 
@@ -269,7 +378,7 @@ public class DaemonProcess implements Runnable {
 			}
 		} catch (KeeperException e) {
 			daemonLogger.error("initZKNode - path = " + e.getPath() +
-					" code = " + e.getCode() + " e: ", e);
+					" code = " + e.code() + " e: ", e);
 			System.exit(1);
 		} catch (InterruptedException e) {
 			daemonLogger.error("initZKNode - e = ", e);
