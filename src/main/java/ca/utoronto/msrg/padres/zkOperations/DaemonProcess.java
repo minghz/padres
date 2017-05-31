@@ -279,12 +279,12 @@ public class DaemonProcess implements Runnable {
 			throws KeeperException, InterruptedException {
 			long t0 = System.nanoTime();
 
-			daemonLogger.debug("starting update setting global flag to 1 time = " + System.currentTimeMillis());
 			String old = setZKNode(GLOBAL_FLAG_PATH, "1");
 			if (old.equals("1")) {
 				daemonLogger.info("tried to update, but one is currently in progress");
 				return;
 			}
+			daemonLogger.debug("starting update setting global flag to 1 time = " + System.currentTimeMillis());
 
 			brokerSet = new HashSet<Entry<String, String>>(newBrokerSet);
 
