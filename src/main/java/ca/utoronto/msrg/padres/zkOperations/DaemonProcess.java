@@ -215,6 +215,8 @@ public class DaemonProcess implements Runnable {
 				String old = setZKNode(GLOBAL_FLAG_PATH, "0");
 				assert(old.equals("1"));
 				tryUpdate = true;
+				daemonLogger.debug("finished update setting global flag to 0 time = "
+						+ System.currentTimeMillis());
 			}
 
 			long t1 = System.nanoTime();
@@ -277,7 +279,7 @@ public class DaemonProcess implements Runnable {
 			throws KeeperException, InterruptedException {
 			long t0 = System.nanoTime();
 
-			daemonLogger.debug("starting update setting global flag to 1");
+			daemonLogger.debug("starting update setting global flag to 1 time = " + System.currentTimeMillis());
 			String old = setZKNode(GLOBAL_FLAG_PATH, "1");
 			if (old.equals("1")) {
 				daemonLogger.info("tried to update, but one is currently in progress");
